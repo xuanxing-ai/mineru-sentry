@@ -8,11 +8,12 @@ English | [简体中文](docs/zh-CN/README-cn.md)
 
 ```mermaid
 flowchart LR
-    Client[Document upload] --> Sentry[Sentry HTTP API]
-    Sentry --> DB[(PostgreSQL task records)]
-    Sentry -->|Start on demand| Worker[MinerU GPU worker]
-    Worker -->|Completed result ZIP| Sentry
-    Sentry --> Files[Markdown, images and JSON]
+    Client[Client Request] --> Sentry[Sentry HTTP API]
+    Sentry --> DB[(PostgreSQL Task & Checkpoint Records)]
+    Sentry -->|Start on demand| Worker[MinerU GPU Worker]
+    Worker -->|Batch Markdown Results| Sentry
+    Sentry --> Files[Disk Checkpoints & Stitched Result]
+    Sentry -->|Direct Markdown / Streaming Output| Client
     Sentry -.->|Stop after 15 idle minutes| Worker
 ```
 
@@ -20,10 +21,13 @@ The gateway has no GPU allocation in Compose. Only the worker runs inference; Se
 
 ## Why Sentry
 
-- **Keep the API available between parsing jobs.** The gateway and database stay running while the GPU worker is stopped. Wake and sleep endpoints also allow manual control.
-- **Track work beyond the HTTP request.** Submissions return a task ID; task and segment records, filenames, SHA-256 hashes, and errors are stored in PostgreSQL.
-- **Choose how to parse each document.** Forward backend, effort, page range, formula, and table options to MinerU. Defaults are `hybrid-engine` and `medium`.
-- **Collect results across resumed runs.** An explicit resume creates a new task, copies completed segments, and combines their Markdown, images, and available middle JSON with the new result. See [recovery boundaries](#resume-and-inspect-results).
+- **Direct Markdown results without ZIP archives or download links.** Complete Markdown text is returned directly in the HTTP response body; no ZIP files or intermediate download redirects.
+- **Dedicated streaming and checkpoint persistence endpoint.** `/api/v1/parse/stream` persists each completed batch to disk as a checkpoint while simultaneously streaming text chunks to the client. Intermediate checkpoints are safely preserved on disk.
+- **Seamless breakpoint reconnection (automatic resume & stitching).** When uploading a same-name file:
+  - **Completed documents**: directly output the full result without re-parsing.
+  - **Unfinished / interrupted documents**: automatically resumes from the last completed checkpoint, finishes remaining pages, and stitches earlier batches (e.g. `0_208.md`) and resumed batches (e.g. `209_end.md`) together into the complete Markdown result. No external glue scripts needed.
+- **Native `-s` offset support.** Pass `-F s=209` or `?s=209` to specify an explicit resume page; Sentry automatically stitches previously completed batches before page 209 with the resumed remainder and outputs the unified Markdown result.
+- **Intelligent GPU scale-to-zero.** GPU worker is stopped automatically when idle, releasing VRAM, and woken on demand.
 
 **Current scope:** one gateway process managing one GPU worker. The supplied worker recipe targets RTX 5090; this repository does not include hardware benchmarks or an end-to-end GPU test suite.
 
@@ -59,65 +63,49 @@ Open [Swagger UI](http://localhost:8080/docs) for the API schema. `/health` repo
 
 The [worker Dockerfile](deploy/worker.Dockerfile) uses a mirror of `vllm/vllm-openai:v0.21.0` and installs `mineru[core]>=3.4.0`. Dependencies are not fully pinned; validate the resolved MinerU API and GPU runtime on your host. Startup waits up to 300 seconds by default, with no fixed cold-start guarantee.
 
-## Parse a document
+## Parse documents and breakpoint reconnection
 
-Use a local PDF named `document.pdf`. File-format support comes from the installed MinerU worker; Sentry forwards the uploaded file.
+Provide a local document (such as `document.pdf`). Supported file formats depend on the installed MinerU worker.
 
-**Submit:**
+### 1. Standard parsing (direct Markdown result)
 
 ```bash
 curl --fail-with-body http://localhost:8080/api/v1/parse \
-  -F 'file=@document.pdf' \
-  -F 'backend=hybrid-engine' \
-  -F 'effort=medium' \
-  -F 'auto_resume=false'
+  -F 'file=@document.pdf'
 ```
 
-Copy the response's **`id`** field into `TASK_ID`. The request returns a task record while parsing runs in the background. This example disables automatic recovery to start a fresh task; the API default for `auto_resume` is `true`.
+- **Completed document**: directly returns the full Markdown text (no ZIP, no file downloads).
+- **Unfinished or interrupted document**: seamlessly continues from the breakpoint to completion and returns the complete stitched result.
 
-**Check status:**
+### 2. Streaming parse and streaming disk write (dedicated endpoint)
+
+For large documents, use the streaming endpoint to write checkpoints to disk while streaming text chunks to the client:
 
 ```bash
-TASK_ID='paste-the-returned-id-here'
-curl --fail-with-body "http://localhost:8080/api/v1/tasks/$TASK_ID"
+curl -N --fail-with-body http://localhost:8080/api/v1/parse/stream \
+  -F 'file=@document.pdf'
 ```
 
-The normal lifecycle is `pending` → `waking_gpu` → `processing` → `completed`. If it becomes `failed`, inspect `error_message` and `segments`. These are task states, not a live page-progress meter.
+- Each batch is persisted to disk as `checkpoints/{start}_{end}.md` upon completion (streaming disk write).
+- Chunks are yielded immediately to the HTTP client (streaming output).
+- If interrupted, completed batches remain intact on disk.
 
-**Download once `status` is `completed`:**
+### 3. Breakpoint reconnection with `-s` offset
 
-```bash
-curl --fail-with-body "http://localhost:8080/api/v1/tasks/$TASK_ID/result" \
-  --output document.md
-```
-
-This endpoint returns **Markdown only** and returns HTTP 400 before completion. Images and merged middle JSON, when available, remain beside the Markdown under `/usr/model/MinerU/data/tasks/<task_id>/`. Copy `images/` with the Markdown when you need its referenced images.
-
-## Resume and inspect results
-
-An explicit resume reuses the original uploaded file and returns a **new task ID**. For example, to start at page index `209` (the 210th page):
-
-```bash
-curl --fail-with-body http://localhost:8080/api/v1/parse/resume \
-  -H 'Content-Type: application/json' \
-  -d "{\"task_id\":\"$TASK_ID\",\"start_page_id\":209}"
-```
-
-Replace `TASK_ID` with the new response's `id` for subsequent queries and downloads. Choose the offset for your document; `209` is an example, not a detected checkpoint.
-
-```bash
-curl --fail-with-body "http://localhost:8080/api/v1/tasks/$TASK_ID/intermediate"
-```
-
-The intermediate endpoint lists files already in that Sentry task directory, a preview of up to 2,000 characters from the first Markdown file, and the completed-segment count. It does not stream partial worker output into Sentry.
-
-Recovery currently has these boundaries:
-
-- Results are downloaded after the worker reports completion. A Sentry segment represents a submitted run, not every internal 64-page processing window.
-- `last_processed_page` is assigned the requested `end_page_id` at completion; it is not updated during parsing and can contain the default sentinel `99999`. `total_pages` is not populated by the current submission flow. Choose resume offsets from known output.
-- Automatic recovery requires `auto_resume=true`, `start_page_id=0`, and a prior failed/interrupted record with the same file hash and a non-null checkpoint. It inherits the original task's parsing options.
-- Stitching concatenates completed segments in order. It does not deduplicate overlapping pages or repair document structure; images with the same filename keep the first copy.
-- Resume IDs are derived from the parent task ID. Repeating a resume against the same parent can conflict with an existing record.
+When a large document parsing is interrupted (e.g. at page 210):
+- Pages 0 to 208 remain saved as durable checkpoints (e.g. `0_208.md`).
+- **Auto-resume**: re-submit the same file; Sentry automatically detects the checkpoint and continues from page 209:
+  ```bash
+  curl --fail-with-body http://localhost:8080/api/v1/parse \
+    -F 'file=@document.pdf'
+  ```
+- **Resume with `-s`**: explicitly specify the starting page:
+  ```bash
+  curl --fail-with-body http://localhost:8080/api/v1/parse \
+    -F 'file=@document.pdf' \
+    -F 's=209'
+  ```
+  Sentry automatically stitches `0_208.md` and the resumed `209_end.md` together inside the service and returns the complete Markdown. No external glue script required.
 
 ## Configuration
 
