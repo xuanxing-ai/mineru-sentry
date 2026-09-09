@@ -1,0 +1,14 @@
+.git
+.idea
+.vscode
+__pycache__
+*.py[cod]
+.venv
+venv
+.env
+core/config/.env.*
+logs
+data
+shared_data
+output
+pgdata
