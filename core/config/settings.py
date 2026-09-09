@@ -32,3 +32,7 @@ WORKER_STARTUP_TIMEOUT_SECONDS = env.get("WORKER_STARTUP_TIMEOUT_SECONDS")
 # Shared storage paths used by the gateway and worker.
 SHARED_DATA_DIR = env.get("SHARED_DATA_DIR")
 MINERU_CONFIG_FILE = env.get("MINERU_CONFIG_FILE")
+
+# Durable PDF checkpoint size and per-batch worker polling deadline.
+PARSE_BATCH_PAGES = env.get("PARSE_BATCH_PAGES")
+WORKER_TASK_TIMEOUT_SECONDS = env.get("WORKER_TASK_TIMEOUT_SECONDS")

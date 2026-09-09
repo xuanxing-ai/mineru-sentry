@@ -1,118 +1,90 @@
-"""API router for document parsing and task retrieval (sync functions, no business implementation in router)."""
-from pathlib import Path
+"""HTTP routes for resumable document parsing and direct Markdown results."""
 from typing import Annotated, List
-from fastapi import APIRouter, File, Form, UploadFile
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Depends, File, UploadFile
+from fastapi.responses import PlainTextResponse, StreamingResponse
 
 from core.dto.task_req import ParseTaskResumeReq, ParseTaskSubmitReq
-from core.dto.task_vo import (
-	IntermediateResultVo,
-	ParseTaskDetailVo,
-	ParseTaskVo,
-)
+from core.dto.task_vo import ParseTaskDetailVo, ParseTaskVo
 from core.service.parse_service import parse_service
 
 router = APIRouter(prefix="/api/v1", tags=["Document Parsing"])
 
 
-@router.post("/parse", response_model=ParseTaskVo, summary="Submit document for parsing")
+@router.post("/parse", response_class=PlainTextResponse, summary="Upload, resume or reuse a document and return complete Markdown")
 def submit_parse(
-	file: Annotated[UploadFile, File(description="Target document file")],
-	backend: Annotated[str, Form(description="Parser backend")] = "hybrid-engine",
-	effort: Annotated[str, Form(description="Hybrid effort")] = "medium",
-	parse_method: Annotated[str, Form(description="auto, txt, or ocr")] = "auto",
-	formula_enable: Annotated[bool, Form(description="Formula parsing")] = True,
-	table_enable: Annotated[bool, Form(description="Table parsing")] = True,
-	start_page_id: Annotated[int, Form(description="Start page (0-indexed)")] = 0,
-	end_page_id: Annotated[int, Form(description="End page (0-indexed)")] = 99999,
-	auto_resume: Annotated[bool, Form(description="Auto-resume previously interrupted tasks")] = True,
-) -> ParseTaskVo:
-	"""
-	Receives upload request, constructs ParseTaskSubmitReq, and delegates to parse_service.
-	:param file: UploadFile stream.
-	:param backend: Backend parameter string.
-	:param effort: Effort level string.
-	:param parse_method: Parse method string.
-	:param formula_enable: Formula flag boolean.
-	:param table_enable: Table flag boolean.
-	:param start_page_id: Start page int.
-	:param end_page_id: End page int.
-	:param auto_resume: Auto-resume flag boolean.
-	:return: ParseTaskVo containing task status.
-	"""
-	file_bytes = file.file.read()
-	raw_name = file.filename if file.filename else "document.pdf"
-
-	req_obj = ParseTaskSubmitReq(
-		backend=backend,
-		effort=effort,
-		parse_method=parse_method,
-		formula_enable=formula_enable,
-		table_enable=table_enable,
-		start_page_id=start_page_id,
-		end_page_id=end_page_id,
-		auto_resume=auto_resume,
-	)
-	return parse_service.handle_submit_parse(file_bytes, raw_name, req_obj)
+	file: Annotated[UploadFile, File(description="Same filename and content reconnect to the saved task")],
+	req: Annotated[ParseTaskSubmitReq, Depends(ParseTaskSubmitReq.as_form)],
+):
+	"""Return the complete parsing result in the response body."""
+	upload_file = file
+	submit_req = req
+	response = parse_service.handle_submit_parse(upload_file, submit_req)
+	return response
 
 
-@router.post("/parse/resume", response_model=ParseTaskVo, summary="Resume an interrupted task with -s offset")
-def resume_parse(req: ParseTaskResumeReq) -> ParseTaskVo:
-	"""
-	Delegates task resume request to parse_service.
-	:param req: ParseTaskResumeReq object.
-	:return: ParseTaskVo object.
-	"""
-	validated_req = ParseTaskResumeReq.model_validate(req.model_dump())
-	return parse_service.handle_resume_parse(validated_req)
+@router.post("/parse/stream", response_class=StreamingResponse, summary="Replay saved Markdown and stream newly completed batches")
+def stream_parse(
+	file: Annotated[UploadFile, File(description="Document to parse or reconnect")],
+	req: Annotated[ParseTaskSubmitReq, Depends(ParseTaskSubmitReq.as_form)],
+):
+	"""Stream the full document from its saved prefix through completion."""
+	upload_file = file
+	submit_req = req
+	response = parse_service.handle_submit_parse(upload_file, submit_req, stream=True)
+	return response
 
 
-@router.get("/tasks/{task_id}", response_model=ParseTaskDetailVo, summary="Get task details and segments")
+@router.post("/parse/resume", response_class=PlainTextResponse, summary="Resume a saved task and return complete Markdown")
+def resume_parse(req: ParseTaskResumeReq):
+	"""Use a task ID instead of uploading the same document again."""
+	resume_req = req
+	response = parse_service.handle_resume_parse(resume_req)
+	return response
+
+
+@router.get("/tasks/{task_id}", response_model=ParseTaskDetailVo, summary="Get task details and checkpoints")
 def get_task(task_id: str) -> ParseTaskDetailVo:
-	"""
-	Delegates task retrieval to parse_service.
-	:param task_id: Unique task identifier string.
-	:return: ParseTaskDetailVo instance.
-	"""
-	return parse_service.handle_get_task(task_id)
+	"""Return diagnostic task status without triggering execution."""
+	target_id = task_id
+	detail_vo = parse_service.handle_get_task(target_id)
+	return detail_vo
 
 
-@router.get("/tasks/{task_id}/result", summary="Download final unified Markdown file")
-def download_result(task_id: str) -> FileResponse:
-	"""
-	Delegates result file download to parse_service.
-	:param task_id: Unique task identifier string.
-	:return: FileResponse streaming the markdown file.
-	"""
-	result_path = parse_service.handle_get_result_path(task_id)
-	return FileResponse(path=str(result_path), media_type="text/markdown", filename=result_path.name)
+@router.get("/tasks/{task_id}/result", response_class=PlainTextResponse, summary="Return completed Markdown text")
+def get_result(task_id: str):
+	"""Return the result body, without a file download response."""
+	target_id = task_id
+	response = parse_service.handle_get_result(target_id)
+	return response
 
 
-@router.get("/tasks/{task_id}/intermediate", response_model=IntermediateResultVo, summary="Get intermediate results")
-def get_intermediate_results(task_id: str) -> IntermediateResultVo:
-	"""
-	Delegates intermediate results retrieval to parse_service.
-	:param task_id: Unique task identifier string.
-	:return: IntermediateResultVo instance.
-	"""
-	return parse_service.handle_get_intermediate(task_id)
+@router.get("/tasks/{task_id}/intermediate", response_class=PlainTextResponse, summary="Return saved Markdown text so far")
+def get_intermediate_results(task_id: str):
+	"""Return the durable partial result without file listings or paths."""
+	target_id = task_id
+	response = parse_service.handle_get_intermediate(target_id)
+	return response
 
 
-@router.get("/tasks/by-filename/{filename}", response_model=List[ParseTaskVo], summary="Find tasks by filename")
+@router.post("/parse/by-filename/{filename}", response_class=PlainTextResponse, summary="Resume or return a saved document by filename")
+def get_filename_result(filename: str):
+	"""Resolve a saved filename and return its complete parsing result."""
+	target_name = filename
+	response = parse_service.handle_filename_result(target_name)
+	return response
+
+
+@router.get("/tasks/by-filename/{filename}", response_model=List[ParseTaskVo], summary="Find task records by filename")
 def find_tasks_by_filename(filename: str) -> List[ParseTaskVo]:
-	"""
-	Delegates query by filename to parse_service.
-	:param filename: Filename string.
-	:return: List of ParseTaskVo.
-	"""
-	return parse_service.handle_list_by_filename(filename)
+	"""Return diagnostic records matching an exact filename."""
+	target_name = filename
+	records = parse_service.handle_list_by_filename(target_name)
+	return records
 
 
-@router.get("/tasks/by-hash/{file_hash}", response_model=List[ParseTaskVo], summary="Find tasks by SHA-256 hash")
+@router.get("/tasks/by-hash/{file_hash}", response_model=List[ParseTaskVo], summary="Find task records by SHA-256")
 def find_tasks_by_hash(file_hash: str) -> List[ParseTaskVo]:
-	"""
-	Delegates query by file hash to parse_service.
-	:param file_hash: SHA-256 hash string.
-	:return: List of ParseTaskVo.
-	"""
-	return parse_service.handle_list_by_hash(file_hash)
+	"""Return diagnostic records matching a content hash."""
+	target_hash = file_hash
+	records = parse_service.handle_list_by_hash(target_hash)
+	return records

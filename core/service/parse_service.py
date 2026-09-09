@@ -1,117 +1,271 @@
-"""Service handling business assembly and data conversion for parse API endpoints."""
+"""Resolve same-name uploads to durable tasks and return Markdown directly."""
 import hashlib
-from pathlib import Path
-from typing import List, Optional
-import uuid
-from fastapi import HTTPException
 import logging
+import os
+from pathlib import Path
+import threading
+import time
+from typing import Iterator, List, Optional
+import uuid
+
+from fastapi import HTTPException, UploadFile
+from fastapi.responses import PlainTextResponse, StreamingResponse
+from pypdf import PdfReader
 
 from core.config import settings
-from core.init import postgres_init
 from core.constant.task_constant import TaskStatusConstant
+from core.dto.task_req import ParseTaskResumeReq, ParseTaskSubmitReq
+from core.dto.task_vo import ParseTaskDetailVo, ParseTaskVo, TaskSegmentVo
 from core.entity.parse_task_entity import ParseTaskEntity
+from core.init import postgres_init
 from core.repo.parse_task_repo import ParseTaskRepo
 from core.repo.task_segment_repo import TaskSegmentRepo
-from core.dto.task_req import ParseTaskResumeReq, ParseTaskSubmitReq
-from core.dto.task_vo import (
-	IntermediateResultVo,
-	ParseTaskDetailVo,
-	ParseTaskVo,
-	TaskSegmentVo,
-)
 from core.service.task_executor_service import task_executor_service
 
 
 class ParseService:
-	"""
-	Business logic layer for parsing operations.
-	"""
+	"""Use filename identity, content validation, and immutable batches for reconnectable results."""
 
-	@staticmethod
-	def handle_submit_parse(file_content: bytes, original_filename: str, req: ParseTaskSubmitReq) -> ParseTaskVo:
-		"""
-		Validates file, checks deduplication/auto-resume, persists task entity, and triggers executor.
-		:param file_content: Binary file content bytes.
-		:param original_filename: Name of the uploaded file.
-		:param req: ParseTaskSubmitReq instance.
-		:return: ParseTaskVo containing task details.
-		"""
-		safe_name = Path(original_filename).name
-		file_hash = hashlib.sha256(file_content).hexdigest()
-		file_size = len(file_content)
+	def __init__(self) -> None:
+		"""Serialize submission decisions while background tasks continue independently."""
+		self._submission_lock = threading.RLock()
 
-		storage_root = settings.SHARED_DATA_DIR if settings.SHARED_DATA_DIR else "/usr/model/MinerU/data"
-		uploads_dir = Path(storage_root) / "uploads"
+	def handle_submit_parse(self, upload: UploadFile, req: ParseTaskSubmitReq, stream: bool = False):
+		"""Spool an upload, reuse or resume its task, and return complete or incremental text."""
+		task_id = self.prepare_task(upload, req)
+		return self.result_response(task_id, stream)
+
+	def prepare_task(self, upload: UploadFile, req: ParseTaskSubmitReq) -> str:
+		"""Match a filename safely and reject conflicting contents or missing resume prefixes."""
+		original_filename = upload.filename or "document.pdf"
+		safe_name = Path(original_filename.replace("\\", "/")).name
+		if safe_name in ("", ".", "..") or len(safe_name) > 255:
+			raise HTTPException(status_code=422, detail="Invalid filename")
+		storage_root = Path(settings.SHARED_DATA_DIR or "/usr/model/MinerU/data").resolve()
+		uploads_dir = storage_root / "uploads"
 		uploads_dir.mkdir(parents=True, exist_ok=True)
+		temporary_path = uploads_dir / f".{uuid.uuid4().hex}.upload"
+		digest = hashlib.sha256()
+		file_size = 0
+		try:
+			with temporary_path.open("wb") as output:
+				while chunk := upload.file.read(1048576):
+					digest.update(chunk)
+					file_size += len(chunk)
+					output.write(chunk)
+				output.flush()
+				os.fsync(output.fileno())
+			if file_size == 0:
+				raise HTTPException(status_code=422, detail="The uploaded file is empty")
+			file_hash = digest.hexdigest()
+			total_pages = None
+			end_page = req.end_page_id
+			if safe_name.lower().endswith(".pdf"):
+				try:
+					with temporary_path.open("rb") as source:
+						reader = PdfReader(source)
+						total_pages = len(reader.pages)
+					if not total_pages:
+						raise ValueError("PDF has no pages")
+				except Exception as exc:
+					raise HTTPException(status_code=422, detail="Cannot read PDF pages") from exc
+				end_page = min(end_page, total_pages - 1)
+			elif req.start_page_id:
+				raise HTTPException(status_code=422, detail="Page offsets require a PDF")
 
-		saved_file_path = uploads_dir / f"{file_hash}_{safe_name}"
-		with open(saved_file_path, "wb") as f_out:
-			f_out.write(file_content)
+			with self._submission_lock:
+				session = postgres_init.SessionLocal()
+				try:
+					past_records = ParseTaskRepo.list_by_file_name(session, safe_name)
+					task = past_records[0] if past_records else None
+					if task is not None:
+						if task.file_hash != file_hash:
+							raise HTTPException(status_code=409, detail="This filename belongs to different content; use a different filename")
+						option_names = ("backend", "effort", "parse_method", "formula_enable", "table_enable")
+						if any(getattr(task, name) != getattr(req, name) for name in option_names):
+							raise HTTPException(status_code=409, detail="Parsing options differ from the saved task; use a different filename")
+						if not task_executor_service.is_running(task.id):
+							if total_pages:
+								task.total_pages = total_pages
+							if req.end_page_id != 99999:
+								task.end_page_id = min(req.end_page_id, total_pages - 1) if total_pages else req.end_page_id
+							ParseTaskRepo.update(session, task)
+					else:
+						task_id = uuid.uuid4().hex
+						task_dir = storage_root / "tasks" / task_id
+						task_dir.mkdir(parents=True, exist_ok=True)
+						saved_path = uploads_dir / f"{file_hash}_{safe_name}"
+						os.replace(temporary_path, saved_path)
+						task = ParseTaskEntity(
+							id=task_id, create_by="system", file_name=safe_name, file_hash=file_hash,
+							file_path=str(saved_path), file_size=file_size, total_pages=total_pages,
+							status=TaskStatusConstant.PENDING, backend=req.backend, effort=req.effort,
+							parse_method=req.parse_method, formula_enable=req.formula_enable,
+							table_enable=req.table_enable, start_page_id=req.start_page_id, end_page_id=end_page,
+							output_dir=str(task_dir),
+						)
+						ParseTaskRepo.add(session, task)
+					task_id = task.id
+					# Re-uploading also restores a removed source file for an unfinished task.
+					if temporary_path.is_file() and not Path(task.file_path).is_file():
+						Path(task.file_path).parent.mkdir(parents=True, exist_ok=True)
+						os.replace(temporary_path, task.file_path)
+				finally:
+					session.close()
+				self.resume_task(task_id, req.start_page_id)
+				return task_id
+		finally:
+			temporary_path.unlink(missing_ok=True)
 
+	def resume_task(self, task_id: str, start_page_id: Optional[int] = None) -> None:
+		"""Resume the same task; seamlessly continue from checkpoint or specified offset."""
+		resume_offset = None
+		with self._submission_lock:
+			session = postgres_init.SessionLocal()
+			try:
+				task = ParseTaskRepo.get_by_id(session, task_id)
+				if task is None:
+					raise HTTPException(status_code=404, detail="Task not found")
+				if task.status == TaskStatusConstant.COMPLETED and task.final_md_path:
+					if Path(task.final_md_path).is_file():
+						return
+				if not task_executor_service.is_running(task_id):
+					try:
+						task_executor_service.restore_checkpoint(session, task)
+					except Exception as exc:
+						logging.warning("Checkpoint restore warning: %s", exc)
+				if start_page_id is not None and start_page_id > 0:
+					resume_offset = start_page_id
+			finally:
+				session.close()
+			task_executor_service.start_task_in_background(task_id, resume_start_page=resume_offset)
+
+	def result_response(self, task_id: str, stream: bool = False):
+		"""Return Markdown in the response body with no download disposition or file metadata."""
+		headers = {"X-Sentry-Task-ID": task_id, "Cache-Control": "no-store", "X-Accel-Buffering": "no"}
+		chunks = self.iter_result(task_id)
+		if stream:
+			return StreamingResponse(chunks, media_type="text/markdown; charset=utf-8", headers=headers)
+		try:
+			content = "".join(chunks)
+		except RuntimeError as exc:
+			raise HTTPException(status_code=502, detail=str(exc), headers=headers) from exc
+		return PlainTextResponse(content, media_type="text/markdown", headers=headers)
+
+	def iter_result(self, task_id: str) -> Iterator[str]:
+		"""Replay the durable prefix then follow new batches; abort the stream on a failed task."""
+		next_page: Optional[int] = None
+		emitted = False
+		while True:
+			session = postgres_init.SessionLocal()
+			try:
+				task = ParseTaskRepo.get_by_id(session, task_id)
+				if task is None:
+					raise RuntimeError("Task no longer exists")
+				if next_page is None:
+					next_page = task.start_page_id
+				status = task.status
+				error = task.error_message
+				end_page = task.end_page_id
+				final_path = task.final_md_path
+				segments = TaskSegmentRepo.list_by_task_id(session, task_id)
+				ready = sorted(
+					[(segment.start_page, segment.end_page, segment.md_path) for segment in segments
+					 if segment.status == TaskStatusConstant.COMPLETED],
+					key=lambda segment: segment[0],
+				)
+			finally:
+				session.close()
+			if not emitted and status == TaskStatusConstant.COMPLETED and final_path:
+				with Path(final_path).open("r", encoding="utf-8") as source:
+					while chunk := source.read(65536):
+						yield chunk
+				return
+			for start, end, markdown_path in ready:
+				if start < next_page:
+					continue
+				if start != next_page:
+					break
+				if not markdown_path or not Path(markdown_path).is_file():
+					raise RuntimeError("A saved batch is missing; the result is incomplete")
+				with Path(markdown_path).open("r", encoding="utf-8") as source:
+					while chunk := source.read(65536):
+						yield chunk
+				emitted = True
+				next_page = end + 1
+			if status == TaskStatusConstant.COMPLETED:
+				if next_page <= end_page:
+					raise RuntimeError("Completed result contains a page gap")
+				return
+			if status in (TaskStatusConstant.FAILED, TaskStatusConstant.INTERRUPTED):
+				raise RuntimeError(f"Parsing interrupted; upload the same file to resume. {error or ''}")
+			if not task_executor_service.is_running(task_id):
+				# Re-read once when an executor terminates between the snapshot and this check.
+				session = postgres_init.SessionLocal()
+				try:
+					current = ParseTaskRepo.get_by_id(session, task_id)
+					if current.status not in (TaskStatusConstant.COMPLETED, TaskStatusConstant.FAILED):
+						raise RuntimeError("Execution stopped; upload the same file to resume")
+				finally:
+					session.close()
+			time.sleep(0.25)
+
+	def handle_resume_parse(self, req: ParseTaskResumeReq):
+		"""Resume an existing task ID and return its full Markdown body."""
+		self.resume_task(req.task_id, req.start_page_id)
+		return self.result_response(req.task_id)
+
+	def handle_filename_result(self, filename: str):
+		"""Return cached text or resume the latest saved task for this exact filename."""
 		session = postgres_init.SessionLocal()
 		try:
-			# Check for auto-resume if enabled
-			auto_resume_flag = req.auto_resume
-			start_p = req.start_page_id
-			if auto_resume_flag and start_p == 0:
-				past_records = ParseTaskRepo.list_by_file_hash(session, file_hash)
-				for past in past_records:
-					if past.status in (TaskStatusConstant.FAILED, TaskStatusConstant.INTERRUPTED):
-						if past.last_processed_page is not None:
-							logging.info(f"Found failed previous task {past.id}, auto-resuming...")
-							next_start_page = past.last_processed_page + 1
-							resumed_entity = task_executor_service.create_resume_task(past.id, next_start_page)
-							return ParseTaskVo.model_validate(resumed_entity)
-
-			# Create new task
-			task_uuid = str(uuid.uuid4()).replace("-", "")[:32]
-			tasks_dir = Path(storage_root) / "tasks" / task_uuid
-			tasks_dir.mkdir(parents=True, exist_ok=True)
-
-			backend_val = req.backend
-			effort_val = req.effort
-			method_val = req.parse_method
-			formula_val = req.formula_enable
-			table_val = req.table_enable
-			end_p = req.end_page_id
-
-			entity = ParseTaskEntity(
-				id=task_uuid,
-				create_by="system",
-				file_name=safe_name,
-				file_hash=file_hash,
-				file_path=str(saved_file_path),
-				file_size=file_size,
-				status=TaskStatusConstant.PENDING,
-				backend=backend_val,
-				effort=effort_val,
-				parse_method=method_val,
-				formula_enable=formula_val,
-				table_enable=table_val,
-				start_page_id=start_p,
-				end_page_id=end_p,
-				output_dir=str(tasks_dir),
-			)
-			created_entity = ParseTaskRepo.add(session, entity)
-			task_executor_service.start_task_in_background(created_entity.id)
-			return ParseTaskVo.model_validate(created_entity)
+			tasks = ParseTaskRepo.list_by_file_name(session, filename)
+			if not tasks:
+				raise HTTPException(status_code=404, detail="Filename not found")
+			task_id = tasks[0].id
 		finally:
 			session.close()
+		self.resume_task(task_id)
+		return self.result_response(task_id)
+
+	def handle_get_result(self, task_id: str):
+		"""Return an already completed Markdown body without attachment headers."""
+		session = postgres_init.SessionLocal()
+		try:
+			task = ParseTaskRepo.get_by_id(session, task_id)
+			if task is None:
+				raise HTTPException(status_code=404, detail="Task not found")
+			if task.status != TaskStatusConstant.COMPLETED:
+				raise HTTPException(status_code=409, detail="Task is not completed")
+		finally:
+			session.close()
+		return self.result_response(task_id)
 
 	@staticmethod
-	def handle_resume_parse(req: ParseTaskResumeReq) -> ParseTaskVo:
-		"""
-		Processes explicit resume request by delegating to task executor.
-		:param req: ParseTaskResumeReq instance.
-		:return: ParseTaskVo of the created resume task.
-		"""
-		task_id_val = req.task_id
-		start_page_val = req.start_page_id
+	def handle_get_intermediate(task_id: str):
+		"""Return only the contiguous saved Markdown prefix, without resuming execution."""
+		session = postgres_init.SessionLocal()
 		try:
-			resumed_entity = task_executor_service.create_resume_task(task_id_val, start_page_val)
-			return ParseTaskVo.model_validate(resumed_entity)
-		except ValueError as exc:
-			raise HTTPException(status_code=404, detail=str(exc)) from exc
+			task = ParseTaskRepo.get_by_id(session, task_id)
+			if task is None:
+				raise HTTPException(status_code=404, detail="Task not found")
+			segments = TaskSegmentRepo.list_by_task_id(session, task_id)
+			segments.sort(key=lambda segment: segment.start_page)
+			next_page = task.start_page_id
+			parts: List[str] = []
+			for segment in segments:
+				if segment.status != TaskStatusConstant.COMPLETED or segment.start_page < next_page:
+					continue
+				if segment.start_page != next_page:
+					break
+				if not segment.md_path or not Path(segment.md_path).is_file():
+					raise HTTPException(status_code=409, detail="A saved batch is missing")
+				parts.append(Path(segment.md_path).read_text(encoding="utf-8"))
+				next_page = segment.end_page + 1
+			content = "".join(parts)
+			return PlainTextResponse(content, media_type="text/markdown")
+		finally:
+			session.close()
 
 	@staticmethod
 	def handle_get_task(task_id: str) -> ParseTaskDetailVo:
@@ -132,73 +286,7 @@ class ParseService:
 			base_vo = ParseTaskVo.model_validate(entity)
 			return ParseTaskDetailVo(
 				**base_vo.model_dump(),
-				final_md_path=entity.final_md_path,
 				segments=segment_vos,
-			)
-		finally:
-			session.close()
-
-	@staticmethod
-	def handle_get_result_path(task_id: str) -> Path:
-		"""
-		Validates completion status and returns path to final stitched Markdown.
-		:param task_id: Primary key string.
-		:return: Path object to Markdown file.
-		"""
-		session = postgres_init.SessionLocal()
-		try:
-			entity = ParseTaskRepo.get_by_id(session, task_id)
-			if not entity:
-				raise HTTPException(status_code=404, detail="Task not found")
-
-			if entity.status != TaskStatusConstant.COMPLETED or not entity.final_md_path:
-				raise HTTPException(status_code=400, detail=f"Task is not completed (status: {entity.status})")
-
-			md_path = Path(entity.final_md_path)
-			if not md_path.exists():
-				raise HTTPException(status_code=404, detail="Result file not found on disk")
-			return md_path
-		finally:
-			session.close()
-
-	@staticmethod
-	def handle_get_intermediate(task_id: str) -> IntermediateResultVo:
-		"""
-		Collects available intermediate files and markdown snippet from task directory.
-		:param task_id: Primary key string.
-		:return: IntermediateResultVo instance.
-		"""
-		session = postgres_init.SessionLocal()
-		try:
-			entity = ParseTaskRepo.get_by_id(session, task_id)
-			if not entity:
-				raise HTTPException(status_code=404, detail="Task not found")
-
-			task_dir = Path(entity.output_dir)
-			files_list: List[str] = []
-			preview_text: Optional[str] = None
-
-			if task_dir.exists():
-				files_list = [str(p.relative_to(task_dir)) for p in task_dir.glob("**/*") if p.is_file()]
-				md_files = list(task_dir.glob("**/*.md"))
-				if md_files:
-					try:
-						with open(md_files[0], "r", encoding="utf-8") as f:
-							preview_text = f.read(2000)
-					except Exception:
-						pass
-
-			segments = TaskSegmentRepo.list_by_task_id(session, task_id)
-			completed_segs = [s for s in segments if s.status == TaskStatusConstant.COMPLETED]
-
-			return IntermediateResultVo(
-				task_id=entity.id,
-				status=entity.status,
-				file_name=entity.file_name,
-				last_processed_page=entity.last_processed_page,
-				completed_segments_count=len(completed_segs),
-				available_md_preview=preview_text,
-				available_files=files_list,
 			)
 		finally:
 			session.close()
@@ -232,5 +320,4 @@ class ParseService:
 			session.close()
 
 
-# Global singleton service
 parse_service = ParseService()
