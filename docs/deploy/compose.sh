@@ -4,41 +4,66 @@ set -eu
 deploy_directory=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 project_root=$(CDPATH= cd -- "$deploy_directory/../.." && pwd)
 
-# Discover unified environment configuration
-if [ -n "${ENV_FILE:-}" ] && [ -r "$ENV_FILE" ]; then
-	env_file="$ENV_FILE"
-elif [ -r "$project_root/core/config/.env.dev" ]; then
-	env_file="$project_root/core/config/.env.dev"
-elif [ -r "$project_root/core/config/.env" ]; then
-	env_file="$project_root/core/config/.env"
-elif [ -r "$project_root/.env" ]; then
-	env_file="$project_root/.env"
-elif [ -r "/usr/model/MinerU/.env" ]; then
-	env_file="/usr/model/MinerU/.env"
-elif [ -r "$project_root/core/config/.env.example" ]; then
-	env_file="$project_root/core/config/.env.example"
+# Environment configuration (interactive prompt; default: core/config/.env.dev)
+default_env="${ENV_FILE:-$project_root/core/config/.env.dev}"
+
+if [ -t 0 ]; then
+	printf "请输入环境配置文件路径 [直接回车默认: %s]: " "$default_env"
+	read -r user_input || user_input=""
+	if [ -n "$user_input" ]; then
+		if [ -r "$user_input" ]; then
+			env_file="$user_input"
+		elif [ -r "$project_root/core/config/$user_input" ]; then
+			env_file="$project_root/core/config/$user_input"
+		elif [ -r "$project_root/$user_input" ]; then
+			env_file="$project_root/$user_input"
+		else
+			env_file="$user_input"
+		fi
+	else
+		env_file="$default_env"
+	fi
 else
-	echo "No environment file found. Please create core/config/.env.dev" >&2
+	env_file="$default_env"
+fi
+
+if [ ! -r "$env_file" ]; then
+	echo "错误: 环境配置文件不存在或不可读: $env_file" >&2
 	exit 1
 fi
+
 
 # Discover image build/pull type (local vs docker)
 image_type_from_file=$(grep -E '^[[:space:]]*MINERU_IMAGE_TYPE=' "$env_file" 2>/dev/null | tail -n 1 | cut -d '=' -f2- | tr -d '"' | tr -d "'" | tr -d '[:space:]')
 MINERU_IMAGE_TYPE="${MINERU_IMAGE_TYPE:-${image_type_from_file:-local}}"
 export MINERU_IMAGE_TYPE
 
+image_local_from_file=$(grep -E '^[[:space:]]*MINERU_IMAGE_LOCAL=' "$env_file" 2>/dev/null | tail -n 1 | cut -d '=' -f2- | tr -d '"' | tr -d "'" | tr -d '[:space:]')
+image_docker_from_file=$(grep -E '^[[:space:]]*MINERU_IMAGE_DOCKER=' "$env_file" 2>/dev/null | tail -n 1 | cut -d '=' -f2- | tr -d '"' | tr -d "'" | tr -d '[:space:]')
+
 if [ "$MINERU_IMAGE_TYPE" = "docker" ]; then
+	export MINERU_IMAGE="${MINERU_IMAGE:-${image_docker_from_file:-}}"
 	export MINERU_PULL_POLICY="${MINERU_PULL_POLICY:-missing}"
 else
+	export MINERU_IMAGE="${MINERU_IMAGE:-${image_local_from_file:-mineru-api:5090-source}}"
 	export MINERU_PULL_POLICY="${MINERU_PULL_POLICY:-never}"
 fi
 
 prepare_images() {
 	if [ "$MINERU_IMAGE_TYPE" = "docker" ]; then
-		echo "MINERU_IMAGE_TYPE=docker: 本地构建 sentry，从 Docker 仓库拉取 mineru_worker..."
+		if [ -z "${MINERU_IMAGE:-}" ]; then
+			echo "错误: MINERU_IMAGE_TYPE=docker 时必须在配置文件中指定有效的 MINERU_IMAGE_DOCKER。" >&2
+			echo "提示: MinerU 官方未在 Docker Hub 发布预构建镜像。若需本地源码编译，请设置 MINERU_IMAGE_TYPE=local。" >&2
+			exit 1
+		fi
+		echo "MINERU_IMAGE_TYPE=docker: 本地构建 sentry，从仓库拉取 mineru_worker ($MINERU_IMAGE)..."
 		docker compose --env-file "$env_file" -f "$deploy_directory/compose.yaml" build sentry
-		echo "从 Docker 仓库拉取 mineru_worker 镜像..."
-		docker compose --env-file "$env_file" -f "$deploy_directory/compose.yaml" pull mineru_worker
+		echo "从仓库拉取 mineru_worker 镜像..."
+		if ! docker compose --env-file "$env_file" -f "$deploy_directory/compose.yaml" pull mineru_worker; then
+			echo "错误: 拉取 mineru_worker 镜像失败 ($MINERU_IMAGE)。" >&2
+			echo "提示: MinerU 官方未在公共 Docker Hub 发布预构建镜像。若需本地源码编译，请设置 MINERU_IMAGE_TYPE=local。" >&2
+			exit 1
+		fi
 	else
 		echo "MINERU_IMAGE_TYPE=local: 本地源码编译构建服务镜像 (sentry, mineru_worker)..."
 		docker compose --env-file "$env_file" -f "$deploy_directory/compose.yaml" build sentry mineru_worker
@@ -81,8 +106,17 @@ if [ "${1:-}" = "build" ] && [ "$MINERU_IMAGE_TYPE" = "docker" ]; then
 	if [ $# -gt 0 ]; then
 		for target in "$@"; do
 			if [ "$target" = "mineru_worker" ]; then
-				echo "MINERU_IMAGE_TYPE=docker: 跳过本地编译，从 Docker 仓库拉取 mineru_worker 镜像..."
-				docker compose --env-file "$env_file" -f "$deploy_directory/compose.yaml" pull mineru_worker
+				if [ -z "${MINERU_IMAGE:-}" ]; then
+					echo "错误: MINERU_IMAGE_TYPE=docker 时必须在配置文件中指定有效的 MINERU_IMAGE_DOCKER。" >&2
+					echo "提示: MinerU 官方未在 Docker Hub 发布预构建镜像。若需本地源码编译，请设置 MINERU_IMAGE_TYPE=local。" >&2
+					exit 1
+				fi
+				echo "MINERU_IMAGE_TYPE=docker: 跳过本地编译，从仓库拉取 mineru_worker 镜像 ($MINERU_IMAGE)..."
+				if ! docker compose --env-file "$env_file" -f "$deploy_directory/compose.yaml" pull mineru_worker; then
+					echo "错误: 拉取 mineru_worker 镜像失败 ($MINERU_IMAGE)。" >&2
+					echo "提示: MinerU 官方未在公共 Docker Hub 发布预构建镜像。若需本地源码编译，请设置 MINERU_IMAGE_TYPE=local。" >&2
+					exit 1
+				fi
 			else
 				docker compose --env-file "$env_file" -f "$deploy_directory/compose.yaml" build "$target"
 			fi
