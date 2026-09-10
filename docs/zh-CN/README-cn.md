@@ -4,7 +4,7 @@
 
 **面向自托管 MinerU 的按需 GPU 网关：通过 HTTP 接收文档解析任务，在 PostgreSQL 中保存任务记录，并在空闲时停止 Worker。**
 
-[快速开始](#快速开始) · [解析文档](#解析文档) · [配置](#配置) · [MinerU 上游项目](https://github.com/opendatalab/MinerU)
+[快速开始](#快速开始) · [解析文档](#解析文档与断点重连) · [配置](#配置) · [MinerU 上游项目](https://github.com/opendatalab/MinerU)
 
 ```mermaid
 flowchart LR
@@ -21,95 +21,116 @@ Compose 未给网关分配 GPU，推理由 Worker 执行。Sentry 启动一个**
 
 ## 为什么使用 Sentry
 
-- **直接输出 Markdown 结果，无需 ZIP 或下载。** 解析完成后直接在 HTTP 响应体中返回完整的 Markdown 文本；不输出 ZIP 压缩包或繁琐的下载链接。
-- **单独的流式落盘与流式写出接口。** 提供专属 `/api/v1/parse/stream` 接口；每个批次完成时即时写入磁盘 Checkpoint（流式落盘），同时即时写出到客户端（流式写出）。前面已完成批次的中间数据安全保留在磁盘上。
-- **无缝断点重连（自动续跑与拼接）。** 无论通过标准接口还是流式接口，上传同名文件时：
-  - **已完成的文件**：直接秒级输出完整结果，无需重新解析。
-  - **未完成/异常中断的文件**：自动检测最后已落盘 Checkpoint，从断点处无缝继续解析直至完成，服务端自动将前面完成的批次（如 `0_208.md`）与续跑出的剩余批次（如 `209_end.md`）拼接成完整文档返回，无需任何外围脚本手动拼接。
-- **原生支持 `-s` 续跑参数。** 支持直接传入 `-F s=209` 或 `?s=209`（从 0 索引的页码）；指定从断点页续跑时，服务端同样自动与已完成的前置批次缝合输出完整结果。
-- **GPU 智能生命周期管理。** 空闲达到设定阈值自动停止 GPU Worker 释放显存，按需自启。
+- **直接返回解析文本。** 普通接口等待完成后返回完整 Markdown；流式接口按已完成批次返回文本，都不返回 ZIP、下载附件或磁盘路径。
+- **同名文件复用同一任务。** 已完成就返回已有结果；未完成就从已落盘的连续前缀继续；正在运行时复用同一执行任务。
+- **检查点先落盘再记进度。** PDF 默认每页一个批次，完成后原子写入磁盘，再提交数据库检查点；进程中断后可从已保存结果恢复。
+- **按需启停 GPU Worker。** 网关和 PostgreSQL 常驻；解析时启动 Worker，无活动任务且空闲 15 分钟后停止。
 
-**当前范围：** 单个网关进程管理一个 GPU Worker。提供的 Worker 构建方案面向 RTX 5090；仓库尚未包含硬件基准测试或 GPU 端到端测试套件。
+**当前范围：** 单个网关进程管理一个 GPU Worker。PDF 支持按页断点续跑；其他格式作为整个文档处理，尚不支持文档内部断点。5090 推理与启停尚需在目标机器验证。
 
 ## 快速开始
 
-以下命令均在仓库根目录执行。完整解析需要 Docker Engine 与 Compose、具有兼容驱动和 NVIDIA Container Toolkit 的 Linux NVIDIA GPU 主机，以及已下载的 MinerU 本地模型。网关镜像使用 Python 3.12，Compose 提供 PostgreSQL 16。
+以下命令在 RTX 5090 Linux 主机的仓库根目录执行。需要兼容的 NVIDIA 驱动、Docker Engine、NVIDIA Container Toolkit、Compose 2.17+ 和 BuildKit。MinerU 从 `/home/hsiong/Project/Python/MinerU` 的本地源码构建；模型、缓存和解析数据统一放在 `/usr/model/MinerU`。
 
-### 1. 准备本地模型
+### 1. 配置环境（单一配置文件）
+
+配置已完全合并在单个环境文件中（默认使用 `core/config/.env.dev`，支持通过 `CONFIG_FILE_PATH` 自定义）：
 
 ```bash
-sudo mkdir -p /usr/model/MinerU/pipeline /usr/model/MinerU/vlm /usr/model/MinerU/data
-sudo cp -n core/config/mineru.template.json /usr/model/MinerU/mineru.json
+# 复制并编辑配置
+cp core/config/.env.example core/config/.env.dev
+$EDITOR core/config/.env.dev
 ```
 
-按照 MinerU 的[本地模型说明](https://opendatalab.github.io/MinerU/usage/model_source/)下载与安装版本匹配的模型。将 pipeline 和 VLM 模型文件放入上述目录，或修改 `/usr/model/MinerU/mineru.json` 中的 `models-dir`，使其指向 **Worker 容器内**的实际位置。只有空目录和 JSON 模板还不能解析文档。
+- **配置极简统一**：网关、Worker、Docker Compose 均从同一份 `.env` 文件与 `settings.py` 读取。
+- **自动生成 `mineru.json`**：系统启动或唤醒 Worker 时，会自动根据 `settings.py` 生成 `/usr/model/MinerU/mineru.json`，无需用户手工编写和维护。
+- **PostgreSQL 仅负责连接**：本项目只连接 PostgreSQL 存储任务状态，无论 PostgreSQL 运行在独立机器、宿主机还是容器均可。如需在本地通过 Docker 快速启动一个独立 PostgreSQL，可执行：
+  ```bash
+  ./docs/deploy/postgres.sh
+  ```
 
-两个容器都将 `/usr/model/MinerU` 挂载到相同路径。确保容器可读取模型和配置，并可写入 `data` 目录。
-
-### 2. 构建并创建 Worker，再启动网关
-
-[Compose 文件](../../deploy/docker-compose.yml)包含示例数据库凭据、对外映射的 `8080`、`8000`、`5432` 端口，以及供 Sentry 使用的 Docker socket 挂载。请在可信主机上使用，并在对外开放前配置凭据和网络访问。API 尚无内置身份认证，GPU 控制接口也不例外。
+### 2. 从源码构建并准备模型
 
 ```bash
-docker compose -f deploy/docker-compose.yml build sentry mineru_worker
-docker compose -f deploy/docker-compose.yml create mineru_worker
-docker compose -f deploy/docker-compose.yml up -d sentry postgres
+sudo ./docs/deploy/compose.sh config --quiet
+sudo ./docs/deploy/compose.sh build sentry mineru_worker
+
+# 下载模型（自动读取 .env 中的 MINERU_DOWNLOAD_SOURCE 和 MINERU_DOWNLOAD_MODELS，无需手敲参数）
+sudo ./docs/deploy/compose.sh download
+```
+
+- [compose.sh](../deploy/compose.sh) 读取统一配置文件与 [compose.yaml](../deploy/compose.yaml)。
+- [mineru-api.Dockerfile](../deploy/mineru-api.Dockerfile) 从本地 MinerU 源码编译并安装 wheel，容器直接运行 `mineru-api`，无需任何 entrypoint 包装脚本。
+- 下载的模型保存在挂载目录 `/usr/model/MinerU/cache` 中，已有完整兼容模型时可跳过下载命令。
+
+通过 Compose 验证构建的包和 GPU：
+
+```bash
+sudo ./docs/deploy/compose.sh run --rm --no-deps mineru_worker python3 -c \
+  'import torch, mineru; from importlib.metadata import version; print(mineru.__file__); print(version("mineru")); print(torch.cuda.get_device_name(0)); print(torch.ones(1, device="cuda").item())'
+```
+
+### 3. 创建待机 Worker，再启动网关
+
+```bash
+sudo ./docs/deploy/compose.sh create mineru_worker
+sudo ./docs/deploy/compose.sh up -d sentry
+sudo ./docs/deploy/compose.sh --profile worker ps -a
 curl --fail-with-body http://localhost:8080/health
 ```
 
-**不要跳过 `create mineru_worker`。** Sentry 可以启动、停止指定名称的容器，但不能创建它。Worker 在收到解析请求或手动唤醒前保持停止；首次启动前通常为 `created`，停止后为 `exited`。
-
-打开 [Swagger UI](http://localhost:8080/docs)查看接口定义。`/health` 返回 Docker Worker 状态，不检查数据库是否就绪。Worker 停止时 `mineru_api_healthy=false` 属于正常情况；`is_gpu_active` 表示容器运行状态，并非实测 GPU 利用率。
-
-[Worker Dockerfile](../../deploy/worker.Dockerfile)使用 `vllm/vllm-openai:v0.21.0` 的镜像源，并安装 `mineru[core]>=3.4.0`。依赖未完全锁定，需要在目标主机验证实际安装版本的 MinerU API 和 GPU 运行环境。默认等待启动最多 300 秒，不承诺固定冷启动耗时。
+- **不要跳过 `create mineru_worker`**：Sentry 会在有解析任务时按需启动该预创建的容器；Worker 属于 `worker` profile，常规 `up -d` 只启动网关服务。
+- 默认发布网关 `8080` 端口；网关与 Worker 通过内部网络通信。解析前 Worker 保持 `created`，空闲 15 分钟后自动停止进入 `exited` 释放显存。
 
 ## 解析文档与断点重连
 
-准备本地文档（如 `document.pdf`）。支持的文件格式取决于实际安装的 MinerU Worker。
+上传同名、同内容且解析选项一致的文件，即可获取或继续同一个任务。同名但内容、解析选项或结束页不同会返回 HTTP 409，避免混用旧结果；请为不同文档或解析版本使用不同文件名。
 
-### 1. 标准解析（直接获取 Markdown 结果）
+### 1. 返回完整结果
 
 ```bash
 curl --fail-with-body http://localhost:8080/api/v1/parse \
-  -F 'file=@document.pdf'
+  -F 'file=@document.pdf' \
+  -F 'backend=hybrid-engine' \
+  -F 'effort=medium'
 ```
 
-- **完成的文档**：直接返回最终完整的 Markdown 结果（无 ZIP，无文件下载附件）。
-- **未完成或中断的文档**：自动从断点继续解析直至完成，并返回完整拼接后的结果。
+已完成的任务直接返回完整 Markdown 文本；未完成的任务继续执行，完成后再返回。调用方不需要下载文件或自行拼接。任务 ID 仅放在 `X-Sentry-Task-ID` 响应头，供诊断使用。
 
-### 2. 流式解析与流式落盘（单独接口）
-
-针对大文档，使用专用的流式解析接口。Sentry 边解析边落盘 Checkpoint，同时边向客户端 Streaming 写出结果：
+### 2. 按批次流式返回
 
 ```bash
 curl -N --fail-with-body http://localhost:8080/api/v1/parse/stream \
   -F 'file=@document.pdf'
 ```
 
-- 批次完成时，其中间 Markdown 自动持久化到磁盘 `checkpoints/{start}_{end}.md`（流式落盘）。
-- 客户端实时接收已解析的内容流（流式结果写出）。
-- 若中途因异常断开，已完成批次完整保存在磁盘上。
+先返回已有的完整前缀，再随新批次完成返回新增文本。每次重连都从文档开头返回，因此新响应应替换上一次部分结果，不能再次追加到旧响应。普通接口和流式接口都会保存检查点。
 
-### 3. 断点重连与结合 `-s` 续跑
+断开客户端连接不会主动取消后台任务。Worker 批次失败会有限重试；持续失败时普通接口返回 HTTP 502，已经开始的文本流会异常中止。重新上传同名文件即可重试，已完成批次保留。流式输出是批次粒度，不是逐 token 输出。
 
-假设一个大文件在执行到第 210 页时发生异常中断：
-- 前 0~208 页已落盘为 Checkpoint（如 `0_208.md`）。
-- **方式一（自动断点重连）**：再次提交同名文件即可，系统自动识别已落盘进度，无缝从第 209 页续跑并拼接输出完整结果：
-  ```bash
-  curl --fail-with-body http://localhost:8080/api/v1/parse \
-    -F 'file=@document.pdf'
-  ```
-- **方式二（指定 `-s` 续跑）**：显式指定从第 209 页开始续跑：
-  ```bash
-  curl --fail-with-body http://localhost:8080/api/v1/parse \
-    -F 'file=@document.pdf' \
-    -F 's=209'
-  ```
-  服务端自动将第一次跑出的 `0_208.md` 和续跑出的 `209_end.md` 完成内部字符串追加拼接，直接返回完整 Markdown 文本。无需任何外围业务脚本处理拼接。
+### 3. 显式指定断点
+
+如果索引 `0`～`208` 的结果已完整保存，第 210 页对应的续跑索引为 `209`：
+
+```bash
+curl --fail-with-body http://localhost:8080/api/v1/parse \
+  -F 'file=@document.pdf' \
+  -F 's=209'
+```
+
+也支持表单 `start_page_id=209` 或查询参数 `?s=209`。通常直接重新上传、不传 `s` 即可自动恢复。显式页码不能跳过尚未保存的页面，否则返回 HTTP 409；若检查点已经超过该页，则从实际检查点继续，不重复拼接。
+
+默认检查点文件为 `0_0.md`、`1_1.md` 等，服务端按顺序合并，输出完整文本。提高 `PARSE_BATCH_PAGES` 可减少 Worker 请求数，但未完成批次需整体重跑，跨批次结构也可能受影响。内部落盘位于 `/usr/model/MinerU/data/tasks/<task_id>/`，客户端无需操作这些文件。
+
+已上传过的文件也可仅凭文件名继续或读取最终结果：
+
+```bash
+curl --fail-with-body -X POST http://localhost:8080/api/v1/parse/by-filename/document.pdf
+```
 
 ## 配置
 
-本地运行时，将 [env.example](../../core/config/env.example)复制为 `core/config/.env.dev`。进程环境变量优先；`CONFIG_FILE_PATH=.env.prod` 对应 `core/config/.env.prod`，也支持绝对路径。Compose 使用自身传入的环境变量，不会自动加载此文件。
+所有环境变量与服务配置统一位于单一配置文件中（默认为 `core/config/.env.dev`，支持 `CONFIG_FILE_PATH` 覆盖）。模板位于 [core/config/.env.example](../../core/config/.env.example)。网关在启动时读取该文件；启动或唤醒 Worker 时，会自动根据配置生成 `mineru.json`，无需手动编写。
 
 | 配置项 | 默认值或行为 |
 | --- | --- |
@@ -117,11 +138,14 @@ curl -N --fail-with-body http://localhost:8080/api/v1/parse/stream \
 | `POSTGRES_URL` | 数据库主机名或完整 SQLAlchemy URL；未设置时禁用解析接口 |
 | `POSTGRES_PORT` | `5432`；使用主机名时还需设置 `POSTGRES_DATABASE`、`POSTGRES_USERNAME` 和 `POSTGRES_PASSWORD` |
 | `MINERU_WORKER_CONTAINER_NAME` | `mineru_gpu_worker` |
-| `MINERU_API_URL` | `http://mineru_worker:8000`；网关在宿主机运行、通过映射端口访问 Worker 时使用 `http://127.0.0.1:8000` |
+| `MINERU_API_URL` | `http://mineru_worker:8000`；宿主机运行网关需单独提供可访问的 Worker 地址 |
 | `DOCKER_HOST` | Docker SDK 连接配置；示例：`unix:///var/run/docker.sock` |
 | `IDLE_TIMEOUT_SECONDS` | `900`；监控每 10 秒检查一次 |
-| `WORKER_STARTUP_TIMEOUT_SECONDS` | `300` |
+| `DEFAULT_MINERU_LOCAL_API_STARTUP_TIMEOUT_SECONDS` | 容器启动等待超时（秒），默认 `300`；兼容旧变量 `WORKER_STARTUP_TIMEOUT_SECONDS` |
+| `PARSE_BATCH_PAGES` | `1`；每个 PDF 检查点的页数 |
+| `DEFAULT_MINERU_TASK_RESULT_TIMEOUT_SECONDS` | `3600`；每次批次轮询的超时秒数；每批最多尝试 3 次；兼容旧变量 `WORKER_TASK_TIMEOUT_SECONDS` |
 | `SHARED_DATA_DIR` | `/usr/model/MinerU/data` |
+| `MINERU_CONFIG_FILE` | `/usr/model/MinerU/mineru.json`；系统自动从 settings 生成 |
 | `LOG_PATH`、`LOG_NAME`、`LOG_LEVEL` | 应用日志；相对路径基于仓库根目录解析；按天轮转，保留 14 份备份 |
 
 解析选项通过 **multipart 表单字段**传入，不由环境变量设置默认值：
@@ -131,9 +155,7 @@ curl -N --fail-with-body http://localhost:8080/api/v1/parse/stream \
 | `backend`、`effort`、`parse_method` | `hybrid-engine`、`medium`、`auto` |
 | `formula_enable`、`table_enable` | `true` |
 | `start_page_id`、`end_page_id` | `0`、`99999`（从 0 开始的页码索引） |
-| `auto_resume` | `true` |
-
-当前网关没有使用 `env.example` 中的 `DEFAULT_*` 和 `HOST_MINERU_DIR`。`MINERU_CONFIG_FILE` 不负责配置 Worker；Worker 读取的是 Compose 设置的 `MINERU_TOOLS_CONFIG_JSON`。Compose 还设置了 `MINERU_MODEL_SOURCE=local` 和 `MINERU_PROCESSING_WINDOW_SIZE=64`，后者属于 Worker 配置，不代表网关保证显存不会溢出。
+| `s` | 可选的恢复页码，等价于 `start_page_id`；默认自动恢复 |
 
 ## 运维与 API 参考
 
@@ -148,26 +170,28 @@ curl --fail-with-body -X POST http://localhost:8080/api/v1/system/gpu/wake
 curl --fail-with-body -X POST http://localhost:8080/api/v1/system/gpu/sleep
 
 # 查看服务日志。
-docker compose -f deploy/docker-compose.yml logs --tail=100 sentry mineru_worker
+sudo ./docs/deploy/compose.sh logs --tail=100 sentry
 ```
 
 `POST /api/v1/system/gpu/sleep?force=true` 会在有活动任务时仍停止 Worker，可能中断任务。空闲计时只统计通过本网关提交的任务，直接调用 Worker 的请求不在统计范围内。
 
 | 接口 | 用途 |
 | --- | --- |
-| `POST /api/v1/parse` | 上传并提交文档 |
-| `POST /api/v1/parse/resume` | 创建恢复任务 |
+| `POST /api/v1/parse` | 上传、复用或恢复，返回完整 Markdown |
+| `POST /api/v1/parse/stream` | 返回已有前缀并流式输出新批次 |
+| `POST /api/v1/parse/by-filename/{filename}` | 按文件名复用或恢复，返回完整文本 |
+| `POST /api/v1/parse/resume` | 恢复原任务并返回完整文本 |
 | `GET /api/v1/tasks/{task_id}` | 查询任务详情、错误和片段 |
-| `GET /api/v1/tasks/{task_id}/result` | 下载已完成的 Markdown |
-| `GET /api/v1/tasks/{task_id}/intermediate` | 列出已有文件并预览 Markdown |
+| `GET /api/v1/tasks/{task_id}/result` | 返回已完成的 Markdown 文本 |
+| `GET /api/v1/tasks/{task_id}/intermediate` | 返回已经保存的连续 Markdown 前缀 |
 | `GET /api/v1/tasks/by-filename/{filename}` | 按文件名查询记录 |
 | `GET /api/v1/tasks/by-hash/{file_hash}` | 按 SHA-256 查询记录 |
 | `GET /health`、`GET /api/v1/system/gpu/status` | 查询 Worker 状态和空闲倒计时 |
 | `POST /api/v1/system/gpu/wake`、`POST /api/v1/system/gpu/sleep` | 手动控制 Worker 生命周期 |
 
-任务记录持久化，但执行线程和活动任务计数保存在内存中。请运行单个网关进程：当前没有持久化任务队列、重启后自动恢复或跨进程调度协调。Worker 状态轮询会持续重试，没有总超时，因此 Worker 不可达时任务可能一直处于活动状态，需要人工处理。
+任务、片段和检查点持久化，执行线程与活动任务计数保存在内存中。请运行单个网关进程；重启后通过重新上传或按文件名请求恢复任务，不会在启动时自动重放全部任务。仍存在的 Worker 任务会重连，明确失败或已丢失的批次会重新提交。
 
-上传文件会读入网关内存。请在入口层设置适当的上传限制，并在应用外管理存储保留策略。停止 Worker 会结束其 GPU 进程；Sentry 不测量已释放显存，也不统计其他应用占用的显存。
+上传按块写入磁盘；普通完整响应会在网关内存中组装，大文档可使用流式接口。持久化依赖数据库和共享目录同时保留；如果已完成片段的文件丢失，接口会报错，不会悄悄返回缺页结果。停止 Worker 会结束其 GPU 进程，Sentry 不测量实际释放的显存。
 
 ## 本地开发
 
@@ -177,7 +201,7 @@ docker compose -f deploy/docker-compose.yml logs --tail=100 sentry mineru_worker
 python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install -r requirements.txt
-cp -n core/config/env.example core/config/.env.dev
+cp -n core/config/.env.example core/config/.env.dev
 ```
 
 按宿主机环境修改数据库、Docker 连接、共享目录和 Worker URL，然后运行：
@@ -202,8 +226,8 @@ curl --fail-with-body http://localhost:8080/openapi.json
 
 ## 项目与支持
 
-[main.py](../../main.py) 是应用入口。[core/](../../core/) 包含 API、服务、持久化和配置；[deploy/](../../deploy/) 包含容器构建文件与 Compose 编排。
+[main.py](../../main.py) 是应用入口。[core/](../../core/) 包含 API、服务、持久化和配置；[docs/deploy/](../deploy/) 包含容器构建文件与 Compose 编排。
 
-报告问题时，请提供出错接口、任务状态或错误、实际安装的 MinerU 版本、相关日志及已移除凭据的部署信息。仓库尚无已提交的自动化测试套件；修改 Worker 对接时需要在运行中的 MinerU 服务上验证。
+报告问题时，请提供出错接口、任务状态或错误、实际安装的 MinerU 版本、相关日志及已移除凭据的部署信息。检查点与结果接口的测试位于 [tests/test_checkpoint_results.py](../../tests/test_checkpoint_results.py)，使用独立 PostgreSQL 数据库和真实磁盘文件；Worker 对接仍需在运行中的 MinerU 服务上验证。
 
 文档解析由 [MinerU](https://github.com/opendatalab/MinerU) 提供。本仓库目前没有许可证文件；本项目的授权条款请咨询维护者，上游项目的许可证请查阅其各自仓库。
