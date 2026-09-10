@@ -75,7 +75,7 @@ XDG_CACHE_HOME = env.get("XDG_CACHE_HOME")
 # Container image build and deploy configuration.
 MINERU_IMAGE_TYPE = env.get("MINERU_IMAGE_TYPE") or "local"
 MINERU_IMAGE_LOCAL = env.get("MINERU_IMAGE_LOCAL") or "mineru-api:5090-source"
-MINERU_IMAGE_DOCKER = env.get("MINERU_IMAGE_DOCKER") or ""
+MINERU_IMAGE_DOCKER = env.get("MINERU_IMAGE_DOCKER") or "alexsuntop/mineru:3.4.2"
 MINERU_IMAGE = (
 	MINERU_IMAGE_DOCKER
 	if MINERU_IMAGE_TYPE == "docker" and MINERU_IMAGE_DOCKER
