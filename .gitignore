@@ -28,6 +28,7 @@ ENV/
 # Environment Variables
 .env
 core/config/.env.*
+!core/config/.env.example
 
 # IDE
 .idea/
