@@ -42,3 +42,4 @@ shared_data/
 output/
 logs/
 pgdata/
+docs/prompt.md
