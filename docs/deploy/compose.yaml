@@ -1,0 +1,73 @@
+name: mineru-sentry
+
+services:
+  sentry:
+    build:
+      context: ../..
+      dockerfile: docs/deploy/sentry.Dockerfile
+    image: ${SENTRY_IMAGE:-mineru-sentry:source}
+    pull_policy: never
+    container_name: mineru-sentry
+    restart: unless-stopped
+    ports:
+      - "${SENTRY_BIND_ADDRESS:-0.0.0.0}:${SENTRY_PUBLISHED_PORT:-8080}:${SERVICE_PORT:-8080}"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /usr/model/MinerU:/usr/model/MinerU
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks: [mineru_net]
+
+  mineru_worker:
+    # Excluded from a plain up; the gateway starts the pre-created container on demand.
+    profiles: [worker]
+    build:
+      context: ../..
+      dockerfile: docs/deploy/mineru-api.Dockerfile
+      additional_contexts:
+        mineru_source: ${MINERU_SOURCE_DIR:-/home/hsiong/Project/Python/MinerU}
+      args:
+        MINERU_BASE_IMAGE: ${MINERU_BASE_IMAGE:-vllm/vllm-openai:v0.21.0}
+    image: ${MINERU_IMAGE:-mineru-api:5090-source}
+    pull_policy: never
+    container_name: ${MINERU_WORKER_CONTAINER_NAME:-mineru_gpu_worker}
+    restart: "no"
+    shm_size: ${MINERU_SHM_SIZE:-16gb}
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${MINERU_GPU_DEVICE_ID:-0}"]
+              capabilities: [gpu]
+    environment:
+      - MINERU_TOOLS_CONFIG_JSON=${MINERU_CONFIG_FILE:-/usr/model/MinerU/mineru.json}
+      - MINERU_MODEL_SOURCE=${MINERU_MODEL_SOURCE:-local}
+      - MINERU_DEVICE_MODE=${MINERU_DEVICE_MODE:-cuda}
+      - MINERU_API_OUTPUT_ROOT=${MINERU_API_OUTPUT_ROOT:-/usr/model/MinerU/data/worker_output}
+      - MINERU_PROCESSING_WINDOW_SIZE=${MINERU_PROCESSING_WINDOW_SIZE:-64}
+      - MINERU_API_MAX_CONCURRENT_REQUESTS=${MINERU_API_MAX_CONCURRENT_REQUESTS:-1}
+      - MINERU_API_ENABLE_VLM_PRELOAD=${MINERU_API_ENABLE_VLM_PRELOAD:-false}
+      - MINERU_API_ENABLE_FASTAPI_DOCS=${MINERU_API_ENABLE_FASTAPI_DOCS:-true}
+      - MINERU_API_TASK_RETENTION_SECONDS=${MINERU_API_TASK_RETENTION_SECONDS:-86400}
+      - MINERU_API_TASK_CLEANUP_INTERVAL_SECONDS=${MINERU_API_TASK_CLEANUP_INTERVAL_SECONDS:-300}
+      - MINERU_FORMULA_ENABLE=${MINERU_FORMULA_ENABLE:-true}
+      - MINERU_FORMULA_CH_SUPPORT=${MINERU_FORMULA_CH_SUPPORT:-false}
+      - MINERU_TABLE_ENABLE=${MINERU_TABLE_ENABLE:-true}
+      - MINERU_TABLE_MERGE_ENABLE=${MINERU_TABLE_MERGE_ENABLE:-true}
+      - MINERU_OCR_DET_MASK_INLINE_FORMULA_ENABLE=${MINERU_OCR_DET_MASK_INLINE_FORMULA_ENABLE:-true}
+      - MODELSCOPE_CACHE=${MODELSCOPE_CACHE:-/usr/model/MinerU/cache/modelscope}
+      - HF_HOME=${HF_HOME:-/usr/model/MinerU/cache/huggingface}
+      - TORCH_HOME=${TORCH_HOME:-/usr/model/MinerU/cache/torch}
+      - XDG_CACHE_HOME=${XDG_CACHE_HOME:-/usr/model/MinerU/cache}
+      - MINERU_DOWNLOAD_SOURCE=${MINERU_DOWNLOAD_SOURCE:-modelscope}
+      - MINERU_DOWNLOAD_MODELS=${MINERU_DOWNLOAD_MODELS:-all}
+    volumes:
+      - /usr/model/MinerU:/usr/model/MinerU
+    networks: [mineru_net]
+
+networks:
+  mineru_net:
