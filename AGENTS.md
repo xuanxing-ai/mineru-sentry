@@ -3,3 +3,4 @@
 + Automatically run git add for newly added eligible files
 + Files containing any confidential information — including specific project details, certificate numbers, Unified Social Credit Codes, personal names, ID numbers, secret keys, residential addresses, images, Word documents, domain names and IP addresses — are strictly prohibited from being committed to Git.
 + Any confidential information in source code shall be configured as independent configuration items (and must also not be committed to Git). Hard-coding such information into source code and committing it to Git alongside the code is strictly forbidden.
++ You must not read or edit: `*/application.yml`, `*/application-*.yml` (except `*/application-example.yml`), `*/.fastRequest/*`, `*/.mvn/*`, `*/.idea/*`, `*/.antigravity/*`, `*/.vscode/*`, `*/.git/*`, `config/.env.*` (except `.env.example`), and `*/.DS_Store`.
