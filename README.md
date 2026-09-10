@@ -1,209 +1,115 @@
-# MinerU-Sentry
+# 从本地 MinerU 源码部署
 
-English | [简体中文](docs/zh-CN/README-cn.md)
+在 `mineru-sentry` 仓库根目录执行以下命令。MinerU 源码使用 `/home/hsiong/Project/Python/MinerU`；模型、缓存和解析数据统一放在 `/usr/model/MinerU`。
 
-**An on-demand GPU gateway for self-hosted MinerU: accept document parsing jobs over HTTP, keep task records in PostgreSQL, and stop the worker when it is idle.**
+## 1. 确认前置条件
 
-[Quick start](#quick-start) · [Parse a document](#parse-a-document) · [Configuration](#configuration) · [MinerU upstream](https://github.com/opendatalab/MinerU)
-
-```mermaid
-flowchart LR
-    Client[Client Request] --> Sentry[Sentry HTTP API]
-    Sentry --> DB[(PostgreSQL Task & Checkpoint Records)]
-    Sentry -->|Start on demand| Worker[MinerU GPU Worker]
-    Worker -->|Batch Markdown Results| Sentry
-    Sentry --> Files[Disk Checkpoints & Stitched Result]
-    Sentry -->|Direct Markdown / Streaming Output| Client
-    Sentry -.->|Stop after 15 idle minutes| Worker
-```
-
-The gateway has no GPU allocation in Compose. Only the worker runs inference; Sentry starts an **existing container**, waits for its API, and stops it after a configurable idle period.
-
-## Why Sentry
-
-- **Direct Markdown results without ZIP archives or download links.** Complete Markdown text is returned directly in the HTTP response body; no ZIP files or intermediate download redirects.
-- **Dedicated streaming and checkpoint persistence endpoint.** `/api/v1/parse/stream` persists each completed batch to disk as a checkpoint while simultaneously streaming text chunks to the client. Intermediate checkpoints are safely preserved on disk.
-- **Seamless breakpoint reconnection (automatic resume & stitching).** When uploading a same-name file:
-  - **Completed documents**: directly output the full result without re-parsing.
-  - **Unfinished / interrupted documents**: automatically resumes from the last completed checkpoint, finishes remaining pages, and stitches earlier batches (e.g. `0_208.md`) and resumed batches (e.g. `209_end.md`) together into the complete Markdown result. No external glue scripts needed.
-- **Native `-s` offset support.** Pass `-F s=209` or `?s=209` to specify an explicit resume page; Sentry automatically stitches previously completed batches before page 209 with the resumed remainder and outputs the unified Markdown result.
-- **Intelligent GPU scale-to-zero.** GPU worker is stopped automatically when idle, releasing VRAM, and woken on demand.
-
-**Current scope:** one gateway process managing one GPU worker. The supplied worker recipe targets RTX 5090; this repository does not include hardware benchmarks or an end-to-end GPU test suite.
-
-## Quick start
-
-Run commands from the repository root. Full parsing requires Docker Engine with Compose, a Linux NVIDIA GPU host with a compatible driver and NVIDIA Container Toolkit, and locally downloaded MinerU models. The gateway image uses Python 3.12; Compose supplies PostgreSQL 16.
-
-### 1. Prepare local models
+需要 Linux、RTX 5090 驱动、Docker Engine、Compose 2.17+ 和支持命名构建上下文的 BuildKit。
 
 ```bash
-sudo mkdir -p /usr/model/MinerU/pipeline /usr/model/MinerU/vlm /usr/model/MinerU/data
-sudo cp -n core/config/mineru.template.json /usr/model/MinerU/mineru.json
+nvidia-smi
+docker compose version
+docker buildx version
+test -f /home/hsiong/Project/Python/MinerU/pyproject.toml
 ```
 
-Download models for your installed MinerU version using its [local-model instructions](https://opendatalab.github.io/MinerU/usage/model_source/). Place pipeline and VLM model files in the directories above, or edit `models-dir` in `/usr/model/MinerU/mineru.json` to match their locations **inside the worker container**. Empty directories and the JSON template are not enough to parse documents.
-
-Both containers mount `/usr/model/MinerU` at the same path. Keep models and configuration readable and the `data` directory writable by the containers.
-
-### 2. Build and create the worker, then start the gateway
-
-The [Compose file](deploy/docker-compose.yml) includes example database credentials, published ports `8080`, `8000`, and `5432`, and a Docker socket mount for Sentry. Use it on a trusted host; configure credentials and network access before exposing it. The API has no built-in authentication, including GPU control endpoints.
+如果 Docker 尚未配置 NVIDIA Container Toolkit，先按 [NVIDIA 安装说明](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)安装，然后执行一次：
 
 ```bash
-docker compose -f deploy/docker-compose.yml build sentry mineru_worker
-docker compose -f deploy/docker-compose.yml create mineru_worker
-docker compose -f deploy/docker-compose.yml up -d sentry postgres
+sudo nvidia-ctk runtime configure --runtime=docker
+sudo systemctl restart docker
+```
+
+已有 GPU 容器能正常运行时无需重复配置。重启 Docker 会影响现有容器。Compose 中的 `device_ids` 负责给 MinerU 容器分配指定显卡；默认选择设备 `0`，请用 `nvidia-smi -L` 核对它是 RTX 5090。
+
+## 2. 配置环境（单一配置文件）
+
+所有配置统一合并在单一配置文件中（默认读取 `core/config/.env.dev`，支持通过 `CONFIG_FILE_PATH` 切换）：
+
+```bash
+# 复制配置模板
+cp core/config/.env.example core/config/.env.dev
+$EDITOR core/config/.env.dev
+```
+
+- **配置统一**：网关、GPU Worker、Docker Compose 均从同一个 `.env` / `settings.py` 读取，无需分散维护多个 env 文件。
+- **自动生成 `mineru.json`**：无需手动维护 `/usr/model/MinerU/mineru.json`，系统会在启动时根据 `settings.py` 自动生成。
+- **PostgreSQL 仅负责连接**：本项目只负责连接 PostgreSQL，不强绑数据库运行位置。你可以使用已有独立数据库、宿主机数据库或任何容器。如需快速启动独立 PostgreSQL 容器，可运行：
+  ```bash
+  ./docs/deploy/postgres.sh
+  ```
+
+## 3. 从源码构建镜像
+
+```bash
+sudo ./docs/deploy/compose.sh config --quiet
+sudo ./docs/deploy/compose.sh build sentry mineru_worker
+```
+
+- [compose.sh](docs/deploy/compose.sh) 统一读取 `.env.dev` 与 [compose.yaml](docs/deploy/compose.yaml)。
+- [mineru-api.Dockerfile](docs/deploy/mineru-api.Dockerfile) 通过构建上下文读取本地 MinerU 源码生成 wheel 并安装，直接以 `mineru-api` 启动，不需要额外的 entrypoint 脚本。
+- [sentry.Dockerfile](docs/deploy/sentry.Dockerfile) 为独立网关镜像。
+
+构建完成后，检查 GPU 和已安装的源码包：
+
+```bash
+sudo ./docs/deploy/compose.sh run --rm --no-deps mineru_worker python3 -c \
+  'import torch, mineru; from importlib.metadata import version; print(mineru.__file__); print(version("mineru")); print(torch.cuda.get_device_name(0)); print(torch.ones(1, device="cuda").item())'
+```
+
+## 4. 下载模型到统一目录
+
+首次部署且本地尚未准备完整模型时执行（下载源和模型类型直接读取 `.env` 中的 `MINERU_DOWNLOAD_SOURCE` 和 `MINERU_DOWNLOAD_MODELS`，无需手敲任何参数）：
+
+```bash
+sudo ./docs/deploy/compose.sh download
+```
+
+模型保存在宿主机挂载目录 `/usr/model/MinerU/cache/` 中，后续容器直接读取，无需重复下载。已有模型可直接跳过。
+
+## 5. 创建待机 Worker，启动网关
+
+```bash
+sudo ./docs/deploy/compose.sh create mineru_worker
+sudo ./docs/deploy/compose.sh up -d sentry
+sudo ./docs/deploy/compose.sh --profile worker ps -a
 curl --fail-with-body http://localhost:8080/health
 ```
 
-**Do not skip `create mineru_worker`.** Sentry can start and stop the named container, but cannot create it. The worker stays stopped until a parsing request or manual wake. Its status is normally `created` before the first start and `exited` after a stop.
+- Worker 首次应为 `created`，休眠后为 `exited`；未唤醒时 `mineru_api_healthy=false` 属正常现象。
+- 仅发布网关的 `8080` 端口；网关与 Worker 通过内部网络或 Docker 通信。
 
-Open [Swagger UI](http://localhost:8080/docs) for the API schema. `/health` reports Docker worker state, not database readiness. `mineru_api_healthy=false` is expected while the worker is stopped; `is_gpu_active` reflects container state rather than measured GPU utilization.
+## 6. 调用 API，直接得到结果
 
-The [worker Dockerfile](deploy/worker.Dockerfile) uses a mirror of `vllm/vllm-openai:v0.21.0` and installs `mineru[core]>=3.4.0`. Dependencies are not fully pinned; validate the resolved MinerU API and GPU runtime on your host. Startup waits up to 300 seconds by default, with no fixed cold-start guarantee.
-
-## Parse documents and breakpoint reconnection
-
-Provide a local document (such as `document.pdf`). Supported file formats depend on the installed MinerU worker.
-
-### 1. Standard parsing (direct Markdown result)
+完整结果：
 
 ```bash
 curl --fail-with-body http://localhost:8080/api/v1/parse \
-  -F 'file=@document.pdf'
+  -F 'file=@document.pdf' \
+  -F 'backend=hybrid-engine' \
+  -F 'effort=medium'
 ```
 
-- **Completed document**: directly returns the full Markdown text (no ZIP, no file downloads).
-- **Unfinished or interrupted document**: seamlessly continues from the breakpoint to completion and returns the complete stitched result.
-
-### 2. Streaming parse and streaming disk write (dedicated endpoint)
-
-For large documents, use the streaming endpoint to write checkpoints to disk while streaming text chunks to the client:
+流式返回已完成批次：
 
 ```bash
 curl -N --fail-with-body http://localhost:8080/api/v1/parse/stream \
   -F 'file=@document.pdf'
 ```
 
-- Each batch is persisted to disk as `checkpoints/{start}_{end}.md` upon completion (streaming disk write).
-- Chunks are yielded immediately to the HTTP client (streaming output).
-- If interrupted, completed batches remain intact on disk.
+`backend`、`effort` 在请求中传入，省略时分别为 `hybrid-engine`、`medium`。同名同内容同选项的未完成文件自动续跑，已完成文件直接返回完整 Markdown。首次解析会自动唤醒 Worker；无活动任务且空闲 900 秒后网关停止 Worker 释放 5090 显存。
 
-### 3. Breakpoint reconnection with `-s` offset
-
-When a large document parsing is interrupted (e.g. at page 210):
-- Pages 0 to 208 remain saved as durable checkpoints (e.g. `0_208.md`).
-- **Auto-resume**: re-submit the same file; Sentry automatically detects the checkpoint and continues from page 209:
-  ```bash
-  curl --fail-with-body http://localhost:8080/api/v1/parse \
-    -F 'file=@document.pdf'
-  ```
-- **Resume with `-s`**: explicitly specify the starting page:
-  ```bash
-  curl --fail-with-body http://localhost:8080/api/v1/parse \
-    -F 'file=@document.pdf' \
-    -F 's=209'
-  ```
-  Sentry automatically stitches `0_208.md` and the resumed `209_end.md` together inside the service and returns the complete Markdown. No external glue script required.
-
-## Configuration
-
-For local execution, copy [env.example](core/config/env.example) to `core/config/.env.dev`. Process environment variables take precedence. `CONFIG_FILE_PATH=.env.prod` selects `core/config/.env.prod`; absolute paths are also supported. Compose passes its own environment and does not load this file automatically.
-
-| Setting | Default or behavior |
-| --- | --- |
-| `SERVICE_PORT`, `SENTRY_HOST` | `8080`, `0.0.0.0`; `SERVICE_PORT` takes precedence over legacy `SENTRY_PORT` |
-| `POSTGRES_URL` | Database hostname or full SQLAlchemy URL; unset disables parsing routes |
-| `POSTGRES_PORT` | `5432`; with a hostname, also set `POSTGRES_DATABASE`, `POSTGRES_USERNAME`, and `POSTGRES_PASSWORD` |
-| `MINERU_WORKER_CONTAINER_NAME` | `mineru_gpu_worker` |
-| `MINERU_API_URL` | `http://mineru_worker:8000`; use `http://127.0.0.1:8000` for a host-run gateway with the published worker port |
-| `DOCKER_HOST` | Docker SDK connection; example: `unix:///var/run/docker.sock` |
-| `IDLE_TIMEOUT_SECONDS` | `900`; the monitor checks every 10 seconds |
-| `WORKER_STARTUP_TIMEOUT_SECONDS` | `300` |
-| `SHARED_DATA_DIR` | `/usr/model/MinerU/data` |
-| `LOG_PATH`, `LOG_NAME`, `LOG_LEVEL` | Application logs; relative paths resolve from the repository root; daily rotation retains 14 backups |
-
-Parsing options are **multipart form fields**, not environment defaults:
-
-| Field | API default |
-| --- | --- |
-| `backend`, `effort`, `parse_method` | `hybrid-engine`, `medium`, `auto` |
-| `formula_enable`, `table_enable` | `true` |
-| `start_page_id`, `end_page_id` | `0`, `99999` (zero-based page indices) |
-| `auto_resume` | `true` |
-
-The `DEFAULT_*` entries and `HOST_MINERU_DIR` in `env.example` are not consumed by the current gateway. `MINERU_CONFIG_FILE` does not configure the worker; the worker reads `MINERU_TOOLS_CONFIG_JSON`, set in Compose. Compose also sets `MINERU_MODEL_SOURCE=local` and `MINERU_PROCESSING_WINDOW_SIZE=64`; the latter is a worker setting, not a gateway memory guarantee.
-
-## Operations and API reference
+## 日志与维护
 
 ```bash
-# Inspect the worker and idle countdown.
+sudo ./docs/deploy/compose.sh logs -f --tail=100 sentry
 curl --fail-with-body http://localhost:8080/api/v1/system/gpu/status
-
-# Start the worker and wait for its health endpoint.
-curl --fail-with-body -X POST http://localhost:8080/api/v1/system/gpu/wake
-
-# Stop the worker; rejected while Sentry has active tasks.
-curl --fail-with-body -X POST http://localhost:8080/api/v1/system/gpu/sleep
-
-# Inspect service logs.
-docker compose -f deploy/docker-compose.yml logs --tail=100 sentry mineru_worker
 ```
 
-`POST /api/v1/system/gpu/sleep?force=true` also stops a worker with active jobs and can interrupt them. Idle tracking only covers jobs submitted through this gateway; direct worker requests are not counted.
-
-| Endpoint | Purpose |
-| --- | --- |
-| `POST /api/v1/parse` | Upload and submit a document |
-| `POST /api/v1/parse/resume` | Create a resumed task |
-| `GET /api/v1/tasks/{task_id}` | Task details, errors, and segments |
-| `GET /api/v1/tasks/{task_id}/result` | Download completed Markdown |
-| `GET /api/v1/tasks/{task_id}/intermediate` | List available files and preview Markdown |
-| `GET /api/v1/tasks/by-filename/{filename}` | Find records by filename |
-| `GET /api/v1/tasks/by-hash/{file_hash}` | Find records by SHA-256 |
-| `GET /health`, `GET /api/v1/system/gpu/status` | Worker state and idle countdown |
-| `POST /api/v1/system/gpu/wake`, `POST /api/v1/system/gpu/sleep` | Manual worker lifecycle control |
-
-Task records persist, but execution threads and active-task counters are in memory. Run a single gateway process: there is no durable job queue, automatic restart recovery, or cross-process scheduler coordination. Worker status polling retries without an overall deadline, so an unreachable worker can leave a task active until intervention.
-
-Uploads are read into gateway memory. Set appropriate upload limits at your ingress and manage storage retention outside the application. Stopping the worker ends its GPU processes; Sentry does not measure freed VRAM or memory used by other applications.
-
-## Local development
-
-Use Python 3.12 with `pip` and `venv` available. On Debian/Ubuntu, the latter may require the `python3-venv` package.
+修改 MinerU 源码后，在没有活动任务时执行：
 
 ```bash
-python3 -m venv .venv
-. .venv/bin/activate
-python -m pip install -r requirements.txt
-cp -n core/config/env.example core/config/.env.dev
+sudo ./docs/deploy/compose.sh build mineru_worker
+sudo ./docs/deploy/compose.sh stop mineru_worker
+sudo ./docs/deploy/compose.sh create --force-recreate mineru_worker
 ```
-
-Edit the database settings, Docker connection, shared directory, and worker URL for your host, then run:
-
-```bash
-python main.py
-```
-
-To inspect the system API without PostgreSQL, start the gateway with:
-
-```bash
-POSTGRES_URL='' python main.py
-```
-
-In another terminal, fetch the schema or open [Swagger UI](http://localhost:8080/docs):
-
-```bash
-curl --fail-with-body http://localhost:8080/openapi.json
-```
-
-In this mode, parsing routes are absent; `/health` and GPU operations still require Docker access. With PostgreSQL configured, startup attempts to create tables; the archived schema is [core/sql/2026-09-09.sql](core/sql/2026-09-09.sql).
-
-## Project and support
-
-[main.py](main.py) is the application entry point. [core/](core/) contains the API, services, persistence, and configuration; [deploy/](deploy/) contains the container recipes and Compose stack.
-
-For bug reports, include the failing endpoint, task status/error, resolved MinerU version, relevant logs, and deployment details with credentials removed. There is no checked-in automated test suite; worker integration changes need validation against a running MinerU service.
-
-Parsing is provided by [MinerU](https://github.com/opendatalab/MinerU). This repository currently contains no license file; consult the maintainers for its licensing terms and upstream projects for their respective licenses.
