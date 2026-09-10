@@ -21,7 +21,7 @@ if TEST_DATABASE_URL:
 	os.environ["LOG_PATH"] = str(Path(_test_storage.name) / "logs")
 	from fastapi.testclient import TestClient
 	from pypdf import PdfWriter
-	from main import app
+	from core.main import app
 	from core.entity.parse_task_entity import ParseTaskEntity
 	from core.entity.task_segment_entity import TaskSegmentEntity
 	from core.init import postgres_init
