@@ -1,10 +1,9 @@
 FROM python:3.12-slim
 
 WORKDIR /app
-COPY requirements.txt ./
+COPY core/requirements.txt ./requirements.txt
 RUN python -m pip install --no-cache-dir -r requirements.txt
 
-COPY main.py ./
 COPY core/ ./core/
 
-CMD ["python", "main.py"]
+CMD ["python", "core/main.py"]
