@@ -109,6 +109,8 @@ class MineruClientService:
 		endpoint = f"{self.base_url}/tasks/{mineru_task_id}/result"
 		try:
 			response = requests.get(endpoint, timeout=300.0)
+			if response.status_code == 404:
+				raise MineruTaskUnavailableError("Worker result no longer exists")
 			response.raise_for_status()
 			payload = response.json()
 			results = payload.get("results")
@@ -120,6 +122,8 @@ class MineruClientService:
 			if not isinstance(markdown, str):
 				raise MineruClientError("MinerU result is missing md_content")
 			return markdown
+		except MineruTaskUnavailableError:
+			raise
 		except Exception as exc:
 			raise MineruClientError(f"Failed to read MinerU result: {exc}") from exc
 
