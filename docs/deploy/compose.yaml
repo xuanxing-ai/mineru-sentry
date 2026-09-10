@@ -29,7 +29,7 @@ services:
       args:
         MINERU_BASE_IMAGE: ${MINERU_BASE_IMAGE:-vllm/vllm-openai:v0.21.0}
     image: ${MINERU_IMAGE:-mineru-api:5090-source}
-    pull_policy: never
+    pull_policy: ${MINERU_PULL_POLICY:-never}
     container_name: ${MINERU_WORKER_CONTAINER_NAME:-mineru_gpu_worker}
     restart: "no"
     shm_size: ${MINERU_SHM_SIZE:-16gb}
