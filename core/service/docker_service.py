@@ -27,7 +27,7 @@ class DockerService:
 		raw_url = settings.MINERU_API_URL
 		self.worker_api_url: str = raw_url if raw_url else "http://mineru_worker:8000"
 
-		raw_startup_timeout = settings.WORKER_STARTUP_TIMEOUT_SECONDS
+		raw_startup_timeout = settings.DEFAULT_MINERU_LOCAL_API_STARTUP_TIMEOUT_SECONDS
 		self.worker_startup_timeout_seconds: int = int(raw_startup_timeout) if raw_startup_timeout else 300
 
 		self._client: Optional[docker.DockerClient] = None
@@ -159,6 +159,7 @@ class DockerService:
 			container.reload()
 			current_status = container.status
 			if current_status != WorkerStatusConstant.RUNNING:
+				settings.generate_mineru_config()
 				name = self.container_name
 				logging.info(f"Starting GPU worker '{name}' for RTX 5090...")
 				container.start()
