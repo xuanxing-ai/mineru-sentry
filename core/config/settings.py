@@ -74,6 +74,7 @@ TORCH_HOME = env.get("TORCH_HOME")
 XDG_CACHE_HOME = env.get("XDG_CACHE_HOME")
 
 # Container image build and deploy configuration.
+MINERU_IMAGE_TYPE = env.get("MINERU_IMAGE_TYPE")
 MINERU_SOURCE_DIR = env.get("MINERU_SOURCE_DIR")
 MINERU_BASE_IMAGE = env.get("MINERU_BASE_IMAGE")
 MINERU_IMAGE = env.get("MINERU_IMAGE")
