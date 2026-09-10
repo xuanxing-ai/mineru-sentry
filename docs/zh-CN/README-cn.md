@@ -229,7 +229,7 @@ curl --fail-with-body http://localhost:8080/openapi.json
 
 ## 项目与支持
 
-[main.py](../../main.py) 是应用入口。[core/](../../core/) 包含 API、服务、持久化和配置；[docs/deploy/](../deploy/) 包含容器构建文件与 Compose 编排。
+[main.py](../../core/main.py) 是应用入口。[core/](../../core/) 包含 API、服务、持久化和配置；[docs/deploy/](../deploy/) 包含容器构建文件与 Compose 编排。
 
 报告问题时，请提供出错接口、任务状态或错误、实际安装的 MinerU 版本、相关日志及已移除凭据的部署信息。检查点与结果接口的测试位于 [tests/test_checkpoint_results.py](../../tests/test_checkpoint_results.py)，使用独立 PostgreSQL 数据库和真实磁盘文件；Worker 对接仍需在运行中的 MinerU 服务上验证。
 
