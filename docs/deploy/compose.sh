@@ -4,28 +4,10 @@ set -eu
 deploy_directory=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 project_root=$(CDPATH= cd -- "$deploy_directory/../.." && pwd)
 
-# Environment configuration (interactive prompt; default: core/config/.env.dev)
-default_env="${ENV_FILE:-$project_root/core/config/.env.dev}"
-
-if [ -t 0 ]; then
-	printf "请输入环境配置文件路径 [直接回车默认: %s]: " "$default_env"
-	read -r user_input || user_input=""
-	if [ -n "$user_input" ]; then
-		if [ -r "$user_input" ]; then
-			env_file="$user_input"
-		elif [ -r "$project_root/core/config/$user_input" ]; then
-			env_file="$project_root/core/config/$user_input"
-		elif [ -r "$project_root/$user_input" ]; then
-			env_file="$project_root/$user_input"
-		else
-			env_file="$user_input"
-		fi
-	else
-		env_file="$default_env"
-	fi
-else
-	env_file="$default_env"
-fi
+printf "请输入环境配置文件名称 [直接回车默认: .env.dev]: "
+read -r env_name || env_name=""
+env_name="${env_name:-.env.dev}"
+env_file="$project_root/core/config/$env_name"
 
 if [ ! -r "$env_file" ]; then
 	echo "错误: 环境配置文件不存在或不可读: $env_file" >&2
@@ -42,11 +24,16 @@ image_local_from_file=$(grep -E '^[[:space:]]*MINERU_IMAGE_LOCAL=' "$env_file" 2
 image_docker_from_file=$(grep -E '^[[:space:]]*MINERU_IMAGE_DOCKER=' "$env_file" 2>/dev/null | tail -n 1 | cut -d '=' -f2- | tr -d '"' | tr -d "'" | tr -d '[:space:]')
 
 if [ "$MINERU_IMAGE_TYPE" = "docker" ]; then
-	export MINERU_IMAGE="${MINERU_IMAGE:-${image_docker_from_file:-}}"
+	export MINERU_IMAGE="${MINERU_IMAGE:-${image_docker_from_file:-alexsuntop/mineru:3.4.2}}"
 	export MINERU_PULL_POLICY="${MINERU_PULL_POLICY:-missing}"
 else
 	export MINERU_IMAGE="${MINERU_IMAGE:-${image_local_from_file:-mineru-api:5090-source}}"
 	export MINERU_PULL_POLICY="${MINERU_PULL_POLICY:-never}"
+	export MINERU_CONFIG_FILE="${MINERU_CONFIG_FILE:-/usr/model/MinerU/mineru.json}"
+	export MODELSCOPE_CACHE="${MODELSCOPE_CACHE:-/usr/model/MinerU/cache/modelscope}"
+	export HF_HOME="${HF_HOME:-/usr/model/MinerU/cache/huggingface}"
+	export TORCH_HOME="${TORCH_HOME:-/usr/model/MinerU/cache/torch}"
+	export XDG_CACHE_HOME="${XDG_CACHE_HOME:-/usr/model/MinerU/cache}"
 fi
 
 prepare_images() {
@@ -93,8 +80,12 @@ if [ "${1:-}" = "init" ]; then
 	shift
 	echo "==> 1/4 [Images] 准备镜像 (模式: $MINERU_IMAGE_TYPE)..."
 	prepare_images
-	echo "==> 2/4 [Download] 下载 MinerU 模型权重..."
-	run_download
+	if [ "$MINERU_IMAGE_TYPE" = "local" ]; then
+		echo "==> 2/4 [Download] 下载 MinerU 模型权重至宿主机..."
+		run_download
+	else
+		echo "==> 2/4 [Download] MINERU_IMAGE_TYPE=docker (默认使用镜像内置模型)，跳过模型下载步骤..."
+	fi
 	echo "==> 3/4 [Create] 创建待机 Worker 容器..."
 	docker compose --env-file "$env_file" -f "$deploy_directory/compose.yaml" create mineru_worker
 	echo "==> 4/4 [Up] 后台启动网关服务..."
