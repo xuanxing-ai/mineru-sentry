@@ -10,7 +10,7 @@ services:
     container_name: mineru-sentry
     restart: unless-stopped
     ports:
-      - "${SENTRY_BIND_ADDRESS:-0.0.0.0}:${SENTRY_PUBLISHED_PORT:-8080}:${SERVICE_PORT:-8080}"
+      - "${SENTRY_BIND_ADDRESS:-0.0.0.0}:${SERVICE_PORT:-8080}:${SERVICE_PORT:-8080}"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - /usr/model/MinerU:/usr/model/MinerU
