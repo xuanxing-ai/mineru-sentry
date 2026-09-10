@@ -142,7 +142,7 @@ All configuration items are managed via a single configuration file (default `co
 | `POSTGRES_PORT` | `5432`; requires `POSTGRES_DATABASE`, `POSTGRES_USERNAME`, `POSTGRES_PASSWORD` if URL is a hostname |
 | `MINERU_IMAGE_TYPE` | `local` (build from local MinerU source, recommended) or `docker` (pull from custom/private registry) |
 | `MINERU_IMAGE_LOCAL` | `mineru-api:5090-source`; image name and tag for local source build mode |
-| `MINERU_IMAGE_DOCKER` | Custom remote image address when `MINERU_IMAGE_TYPE=docker` (e.g. private registry; MinerU has no prebuilt image on Docker Hub) |
+| `MINERU_IMAGE_DOCKER` | `alexsuntop/mineru:3.4.2`; remote prebuilt image or custom private registry when `MINERU_IMAGE_TYPE=docker` |
 | `MINERU_WORKER_CONTAINER_NAME` | `mineru_gpu_worker` |
 | `MINERU_API_URL` | `http://mineru_worker:8000`; worker endpoint accessible by the gateway |
 | `DOCKER_HOST` | Docker socket path; defaults to `unix:///var/run/docker.sock` |
