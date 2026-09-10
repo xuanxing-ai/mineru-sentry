@@ -39,40 +39,35 @@ $EDITOR core/config/.env.dev
   ./docs/deploy/postgres.sh
   ```
 
-## 3. 从源码构建镜像
+## 3. 部署与启动 (Deploy & Launch)
 
+### Option A: 首次一键初始化 (One-click Initial Setup, Recommended)
+自动按序执行镜像构建、模型下载、待机 Worker 创建及网关启动：
 ```bash
-sudo ./docs/deploy/compose.sh config --quiet
-sudo ./docs/deploy/compose.sh build sentry mineru_worker
+./docs/deploy/compose.sh init
 ```
 
-- [compose.sh](docs/deploy/compose.sh) 统一读取 `.env.dev` 与 [compose.yaml](docs/deploy/compose.yaml)。
-- [mineru-api.Dockerfile](docs/deploy/mineru-api.Dockerfile) 通过构建上下文读取本地 MinerU 源码生成 wheel 并安装，直接以 `mineru-api` 启动，不需要额外的 entrypoint 脚本。
-- [sentry.Dockerfile](docs/deploy/sentry.Dockerfile) 为独立网关镜像。
-
-构建完成后，检查 GPU 和已安装的源码包：
-
+### Option B: 分步执行 (Step-by-Step)
 ```bash
-sudo ./docs/deploy/compose.sh run --rm --no-deps mineru_worker python3 -c \
-  'import torch, mineru; from importlib.metadata import version; print(mineru.__file__); print(version("mineru")); print(torch.cuda.get_device_name(0)); print(torch.ones(1, device="cuda").item())'
+# 1. 构建镜像
+./docs/deploy/compose.sh build sentry mineru_worker
+
+# 2. 下载模型到统一目录（已有完整模型可跳过）
+./docs/deploy/compose.sh download
+
+# 3. 创建待机 Worker，启动网关
+./docs/deploy/compose.sh create mineru_worker
+./docs/deploy/compose.sh up -d sentry
 ```
 
-## 4. 下载模型到统一目录
-
-首次部署且本地尚未准备完整模型时执行（下载源和模型类型直接读取 `.env` 中的 `MINERU_DOWNLOAD_SOURCE` 和 `MINERU_DOWNLOAD_MODELS`，无需手敲任何参数）：
-
+日常快速启动：
 ```bash
-sudo ./docs/deploy/compose.sh download
+./docs/deploy/compose.sh start
 ```
 
-模型保存在宿主机挂载目录 `/usr/model/MinerU/cache/` 中，后续容器直接读取，无需重复下载。已有模型可直接跳过。
-
-## 5. 创建待机 Worker，启动网关
-
+检查状态与健康检查：
 ```bash
-sudo ./docs/deploy/compose.sh create mineru_worker
-sudo ./docs/deploy/compose.sh up -d sentry
-sudo ./docs/deploy/compose.sh --profile worker ps -a
+./docs/deploy/compose.sh --profile worker ps -a
 curl --fail-with-body http://localhost:8080/health
 ```
 
