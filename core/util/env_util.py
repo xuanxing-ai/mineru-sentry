@@ -6,11 +6,19 @@ from dotenv import dotenv_values
 
 
 def load_env(filepath: str):
-	"""Load a file under core/config while letting process variables take precedence."""
+	"""Load a file under core/config or project root while letting process variables take precedence."""
 	config_path = Path(filepath).expanduser()
 	if not config_path.is_absolute():
 		config_directory = Path(__file__).resolve().parents[1] / "config"
-		config_path = config_directory / config_path
+		candidate = config_directory / config_path
+		if candidate.is_file():
+			config_path = candidate
+		else:
+			root_candidate = Path(__file__).resolve().parents[2] / config_path
+			if root_candidate.is_file():
+				config_path = root_candidate
+			else:
+				config_path = candidate
 	print(f"Loading environment file: {config_path}")
 	if config_path.is_file():
 		file_values = dotenv_values(config_path)
