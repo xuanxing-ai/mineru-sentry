@@ -84,13 +84,16 @@ class ParseService:
 						option_names = ("backend", "effort", "parse_method", "formula_enable", "table_enable")
 						if any(getattr(task, name) != getattr(req, name) for name in option_names):
 							raise HTTPException(status_code=409, detail="Parsing options differ from the saved task; use a different filename")
+						stored_end = min(task.end_page_id, total_pages - 1) if total_pages else task.end_page_id
+						if task.start_page_id != 0 or stored_end != end_page:
+							raise HTTPException(status_code=409, detail="Saved task has a different page range; use a different filename")
 						if not task_executor_service.is_running(task.id):
-							if total_pages:
-								task.total_pages = total_pages
-							if req.end_page_id != 99999:
-								task.end_page_id = min(req.end_page_id, total_pages - 1) if total_pages else req.end_page_id
+							task.total_pages = total_pages
+							task.end_page_id = end_page
 							ParseTaskRepo.update(session, task)
 					else:
+						if req.start_page_id:
+							raise HTTPException(status_code=409, detail="No saved prefix exists; submit this document from page 0 first")
 						task_id = uuid.uuid4().hex
 						task_dir = storage_root / "tasks" / task_id
 						task_dir.mkdir(parents=True, exist_ok=True)
@@ -101,7 +104,7 @@ class ParseService:
 							file_path=str(saved_path), file_size=file_size, total_pages=total_pages,
 							status=TaskStatusConstant.PENDING, backend=req.backend, effort=req.effort,
 							parse_method=req.parse_method, formula_enable=req.formula_enable,
-							table_enable=req.table_enable, start_page_id=req.start_page_id, end_page_id=end_page,
+							table_enable=req.table_enable, start_page_id=0, end_page_id=end_page,
 							output_dir=str(task_dir),
 						)
 						ParseTaskRepo.add(session, task)
@@ -118,7 +121,7 @@ class ParseService:
 			temporary_path.unlink(missing_ok=True)
 
 	def resume_task(self, task_id: str, start_page_id: Optional[int] = None) -> None:
-		"""Resume the same task; seamlessly continue from checkpoint or specified offset."""
+		"""Resume the same task without allowing an offset to skip unsaved pages."""
 		resume_offset = None
 		with self._submission_lock:
 			session = postgres_init.SessionLocal()
@@ -132,8 +135,11 @@ class ParseService:
 				if not task_executor_service.is_running(task_id):
 					try:
 						task_executor_service.restore_checkpoint(session, task)
-					except Exception as exc:
-						logging.warning("Checkpoint restore warning: %s", exc)
+					except ValueError as exc:
+						raise HTTPException(status_code=409, detail=str(exc)) from exc
+				next_page = task.last_processed_page + 1 if task.last_processed_page is not None else task.start_page_id
+				if start_page_id and start_page_id > next_page:
+					raise HTTPException(status_code=409, detail=f"Only pages before {next_page} are saved; resume from {next_page} or omit s")
 				if start_page_id is not None and start_page_id > 0:
 					resume_offset = start_page_id
 			finally:
