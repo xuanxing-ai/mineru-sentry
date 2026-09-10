@@ -32,6 +32,7 @@ services:
     pull_policy: ${MINERU_PULL_POLICY:-never}
     container_name: ${MINERU_WORKER_CONTAINER_NAME:-mineru_gpu_worker}
     restart: "no"
+    command: ["mineru-api", "--host", "0.0.0.0", "--port", "8000"]
     shm_size: ${MINERU_SHM_SIZE:-16gb}
     ulimits:
       memlock: -1
@@ -44,7 +45,7 @@ services:
               device_ids: ["${MINERU_GPU_DEVICE_ID:-0}"]
               capabilities: [gpu]
     environment:
-      - MINERU_TOOLS_CONFIG_JSON=${MINERU_CONFIG_FILE:-/usr/model/MinerU/mineru.json}
+      - MINERU_TOOLS_CONFIG_JSON=${MINERU_CONFIG_FILE:-}
       - MINERU_MODEL_SOURCE=${MINERU_MODEL_SOURCE:-local}
       - MINERU_DEVICE_MODE=${MINERU_DEVICE_MODE:-cuda}
       - MINERU_API_OUTPUT_ROOT=${MINERU_API_OUTPUT_ROOT:-/usr/model/MinerU/data/worker_output}
@@ -59,10 +60,10 @@ services:
       - MINERU_TABLE_ENABLE=${MINERU_TABLE_ENABLE:-true}
       - MINERU_TABLE_MERGE_ENABLE=${MINERU_TABLE_MERGE_ENABLE:-true}
       - MINERU_OCR_DET_MASK_INLINE_FORMULA_ENABLE=${MINERU_OCR_DET_MASK_INLINE_FORMULA_ENABLE:-true}
-      - MODELSCOPE_CACHE=${MODELSCOPE_CACHE:-/usr/model/MinerU/cache/modelscope}
-      - HF_HOME=${HF_HOME:-/usr/model/MinerU/cache/huggingface}
-      - TORCH_HOME=${TORCH_HOME:-/usr/model/MinerU/cache/torch}
-      - XDG_CACHE_HOME=${XDG_CACHE_HOME:-/usr/model/MinerU/cache}
+      - MODELSCOPE_CACHE=${MODELSCOPE_CACHE:-}
+      - HF_HOME=${HF_HOME:-}
+      - TORCH_HOME=${TORCH_HOME:-}
+      - XDG_CACHE_HOME=${XDG_CACHE_HOME:-}
       - MINERU_DOWNLOAD_SOURCE=${MINERU_DOWNLOAD_SOURCE:-modelscope}
       - MINERU_DOWNLOAD_MODELS=${MINERU_DOWNLOAD_MODELS:-all}
     volumes:
