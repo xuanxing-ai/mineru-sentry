@@ -235,4 +235,8 @@ curl --fail-with-body http://localhost:8080/openapi.json
 
 报告问题时，请提供出错接口、任务状态或错误、实际安装的 MinerU 版本、相关日志及已移除凭据的部署信息。检查点与结果接口的测试位于 [tests/test_checkpoint_results.py](../../tests/test_checkpoint_results.py)，使用独立 PostgreSQL 数据库和真实磁盘文件；Worker 对接仍需在运行中的 MinerU 服务上验证。
 
-文档解析由 [MinerU](https://github.com/opendatalab/MinerU) 提供。本仓库目前没有许可证文件；本项目的授权条款请咨询维护者，上游项目的许可证请查阅其各自仓库。
+---
+
+## 开源许可证
+
+本项目基于 [GNU 通用公共许可证 v3.0 (GPLv3)](../../LICENSE) 开源发布。上游依赖与模型的授权条款请参考其各自官方仓库。
