@@ -49,38 +49,40 @@ $EDITOR core/config/.env.dev
   ./docs/deploy/postgres.sh
   ```
 
-### 2. 从源码构建并准备模型
+### 2. 部署与启动
 
+#### 方式 A：首次一键初始化（推荐）
+包含构建镜像、下载模型、创建待机 Worker、启动网关：
 ```bash
-sudo ./docs/deploy/compose.sh config --quiet
-sudo ./docs/deploy/compose.sh build sentry mineru_worker
-
-# 下载模型（自动读取 .env 中的 MINERU_DOWNLOAD_SOURCE 和 MINERU_DOWNLOAD_MODELS，无需手敲参数）
-sudo ./docs/deploy/compose.sh download
+./docs/deploy/compose.sh init
 ```
 
-- [compose.sh](../deploy/compose.sh) 读取统一配置文件与 [compose.yaml](../deploy/compose.yaml)。
-- [mineru-api.Dockerfile](../deploy/mineru-api.Dockerfile) 从本地 MinerU 源码编译并安装 wheel，容器直接运行 `mineru-api`，无需任何 entrypoint 包装脚本。
-- 下载的模型保存在挂载目录 `/usr/model/MinerU/cache` 中，已有完整兼容模型时可跳过下载命令。
-
-通过 Compose 验证构建的包和 GPU：
-
+#### 方式 B：分步执行
 ```bash
-sudo ./docs/deploy/compose.sh run --rm --no-deps mineru_worker python3 -c \
-  'import torch, mineru; from importlib.metadata import version; print(mineru.__file__); print(version("mineru")); print(torch.cuda.get_device_name(0)); print(torch.ones(1, device="cuda").item())'
+# 1. 构建镜像
+./docs/deploy/compose.sh build sentry mineru_worker
+
+# 2. 下载模型（已有完整兼容模型时可跳过）
+./docs/deploy/compose.sh download
+
+# 3. 创建待机 Worker 并启动网关
+./docs/deploy/compose.sh create mineru_worker
+./docs/deploy/compose.sh up -d sentry
 ```
 
-### 3. 创建待机 Worker，再启动网关
-
+日常重启或启动时，仅需执行：
 ```bash
-sudo ./docs/deploy/compose.sh create mineru_worker
-sudo ./docs/deploy/compose.sh up -d sentry
-sudo ./docs/deploy/compose.sh --profile worker ps -a
+./docs/deploy/compose.sh start
+```
+
+验证服务与 Worker 状态：
+```bash
+./docs/deploy/compose.sh --profile worker ps -a
 curl --fail-with-body http://localhost:8080/health
 ```
 
-- **不要跳过 `create mineru_worker`**：Sentry 会在有解析任务时按需启动该预创建的容器；Worker 属于 `worker` profile，常规 `up -d` 只启动网关服务。
-- 默认发布网关 `8080` 端口；网关与 Worker 通过内部网络通信。解析前 Worker 保持 `created`，空闲 15 分钟后自动停止进入 `exited` 释放显存。
+- **待机机制说明**：Sentry 会在有解析任务时按需启动待机 Worker 容器；Worker 属于 `worker` profile，空闲 15 分钟后自动停止进入 `exited` 释放 5090 显存。
+- 默认发布网关 `8080` 端口；网关与 Worker 通过内部网络通信。
 
 ## 解析文档与断点重连
 
@@ -137,6 +139,7 @@ curl --fail-with-body -X POST http://localhost:8080/api/v1/parse/by-filename/doc
 | `SERVICE_PORT`、`SENTRY_HOST` | `8080`、`0.0.0.0`；`SERVICE_PORT` 优先于兼容变量 `SENTRY_PORT` |
 | `POSTGRES_URL` | 数据库主机名或完整 SQLAlchemy URL；未设置时禁用解析接口 |
 | `POSTGRES_PORT` | `5432`；使用主机名时还需设置 `POSTGRES_DATABASE`、`POSTGRES_USERNAME` 和 `POSTGRES_PASSWORD` |
+| `MINERU_IMAGE_TYPE` | `local`（本地源码编译）或 `docker`（从 Docker 仓库 pull 预构建镜像） |
 | `MINERU_WORKER_CONTAINER_NAME` | `mineru_gpu_worker` |
 | `MINERU_API_URL` | `http://mineru_worker:8000`；宿主机运行网关需单独提供可访问的 Worker 地址 |
 | `DOCKER_HOST` | Docker SDK 连接配置；示例：`unix:///var/run/docker.sock` |
