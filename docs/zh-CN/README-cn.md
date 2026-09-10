@@ -51,38 +51,38 @@ $EDITOR core/config/.env.dev
 
 ### 2. 部署与启动
 
-#### 方式 A：首次一键初始化（推荐）
-包含构建镜像、下载模型、创建待机 Worker、启动网关：
+#### 首次一键初始化
+自动按序完成镜像构建、模型权重下载（至 `/usr/model/MinerU`）、待机 Worker 容器创建以及网关启动：
+
 ```bash
 ./docs/deploy/compose.sh init
 ```
 
-#### 方式 B：分步执行
+#### 日常运维操作
+
 ```bash
-# 1. 构建镜像
-./docs/deploy/compose.sh build sentry mineru_worker
-
-# 2. 下载模型（已有完整兼容模型时可跳过）
-./docs/deploy/compose.sh download
-
-# 3. 创建待机 Worker 并启动网关
-./docs/deploy/compose.sh create mineru_worker
-./docs/deploy/compose.sh up -d sentry
-```
-
-日常重启或启动时，仅需执行：
-```bash
+# 启动网关并确保待机 Worker 容器存在
 ./docs/deploy/compose.sh start
+
+# 停止网关及相关服务
+./docs/deploy/compose.sh down
+
+# 查看网关实时日志
+./docs/deploy/compose.sh logs -f sentry
 ```
 
-验证服务与 Worker 状态：
+#### 验证服务状态
+
 ```bash
-./docs/deploy/compose.sh --profile worker ps -a
+# 网关健康检查
 curl --fail-with-body http://localhost:8080/health
+
+# 查看 Worker 容器状态与显存释放倒计时
+curl --fail-with-body http://localhost:8080/api/v1/system/gpu/status
 ```
 
-- **待机机制说明**：Sentry 会在有解析任务时按需启动待机 Worker 容器；Worker 属于 `worker` profile，空闲 15 分钟后自动停止进入 `exited` 释放 5090 显存。
-- 默认发布网关 `8080` 端口；网关与 Worker 通过内部网络通信。
+- **待机机制说明**：Sentry 会在收到解析请求时按需启动待机 Worker 容器；Worker 属于 `worker` profile，空闲 15 分钟（可配置）后自动停止进入 `exited` 状态，彻底释放 5090 显存。
+- 宿主机仅发布网关的 `8080` 端口；网关与 Worker 通过内部 Docker 网络通信。
 
 ## 解析文档与断点重连
 
@@ -136,10 +136,12 @@ curl --fail-with-body -X POST http://localhost:8080/api/v1/parse/by-filename/doc
 
 | 配置项 | 默认值或行为 |
 | --- | --- |
-| `SERVICE_PORT`、`SENTRY_HOST` | `8080`、`0.0.0.0`；`SERVICE_PORT` 优先于兼容变量 `SENTRY_PORT` |
+| `SERVICE_PORT`、`SENTRY_HOST` | `8080`、`0.0.0.0` |
 | `POSTGRES_URL` | 数据库主机名或完整 SQLAlchemy URL；未设置时禁用解析接口 |
 | `POSTGRES_PORT` | `5432`；使用主机名时还需设置 `POSTGRES_DATABASE`、`POSTGRES_USERNAME` 和 `POSTGRES_PASSWORD` |
-| `MINERU_IMAGE_TYPE` | `local`（本地源码编译）或 `docker`（从 Docker 仓库 pull 预构建镜像） |
+| `MINERU_IMAGE_TYPE` | `local`（本地源码编译，推荐）或 `docker`（从自建/私有 Docker 仓库拉取） |
+| `MINERU_IMAGE_LOCAL` | `mineru-api:5090-source`；本地源码编译模式生成的镜像名与标签 |
+| `MINERU_IMAGE_DOCKER` | `docker` 模式下指定的远端镜像地址（如私有镜像仓库；Docker Hub 无官方预构建镜像） |
 | `MINERU_WORKER_CONTAINER_NAME` | `mineru_gpu_worker` |
 | `MINERU_API_URL` | `http://mineru_worker:8000`；宿主机运行网关需单独提供可访问的 Worker 地址 |
 | `DOCKER_HOST` | Docker SDK 连接配置；示例：`unix:///var/run/docker.sock` |
@@ -203,20 +205,20 @@ sudo ./docs/deploy/compose.sh logs --tail=100 sentry
 ```bash
 python3 -m venv .venv
 . .venv/bin/activate
-python -m pip install -r requirements.txt
+python -m pip install -r core/requirements.txt
 cp -n core/config/.env.example core/config/.env.dev
 ```
 
 按宿主机环境修改数据库、Docker 连接、共享目录和 Worker URL，然后运行：
 
 ```bash
-python main.py
+python core/main.py
 ```
 
 若只需在不连接 PostgreSQL 的情况下查看系统 API，可使用以下方式启动网关：
 
 ```bash
-POSTGRES_URL='' python main.py
+POSTGRES_URL='' python core/main.py
 ```
 
 在另一个终端获取接口定义，或打开 [Swagger UI](http://localhost:8080/docs)：
@@ -229,7 +231,7 @@ curl --fail-with-body http://localhost:8080/openapi.json
 
 ## 项目与支持
 
-[main.py](../../core/main.py) 是应用入口。[core/](../../core/) 包含 API、服务、持久化和配置；[docs/deploy/](../deploy/) 包含容器构建文件与 Compose 编排。
+[core/main.py](../../core/main.py) 是应用入口。[core/](../../core/) 包含 API、服务、持久化和配置；[docs/deploy/](../deploy/) 包含容器构建文件与 Compose 编排。
 
 报告问题时，请提供出错接口、任务状态或错误、实际安装的 MinerU 版本、相关日志及已移除凭据的部署信息。检查点与结果接口的测试位于 [tests/test_checkpoint_results.py](../../tests/test_checkpoint_results.py)，使用独立 PostgreSQL 数据库和真实磁盘文件；Worker 对接仍需在运行中的 MinerU 服务上验证。
 
