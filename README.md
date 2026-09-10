@@ -241,3 +241,9 @@ Database schema migrations are automatically executed on startup when PostgreSQL
 Tests for checkpoints and result stitching are located at [tests/test_checkpoint_results.py](tests/test_checkpoint_results.py), utilizing an isolated database and real disk files.
 
 Document parsing algorithms and models are provided by [MinerU](https://github.com/opendatalab/MinerU). Please consult upstream repositories for model licensing and third-party terms.
+
+---
+
+## License
+
+This project is licensed under the [GNU General Public License v3.0 (GPLv3)](LICENSE).
