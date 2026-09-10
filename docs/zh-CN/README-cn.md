@@ -141,7 +141,7 @@ curl --fail-with-body -X POST http://localhost:8080/api/v1/parse/by-filename/doc
 | `POSTGRES_PORT` | `5432`；使用主机名时还需设置 `POSTGRES_DATABASE`、`POSTGRES_USERNAME` 和 `POSTGRES_PASSWORD` |
 | `MINERU_IMAGE_TYPE` | `local`（本地源码编译，推荐）或 `docker`（从自建/私有 Docker 仓库拉取） |
 | `MINERU_IMAGE_LOCAL` | `mineru-api:5090-source`；本地源码编译模式生成的镜像名与标签 |
-| `MINERU_IMAGE_DOCKER` | `docker` 模式下指定的远端镜像地址（如私有镜像仓库；Docker Hub 无官方预构建镜像） |
+| `MINERU_IMAGE_DOCKER` | `alexsuntop/mineru:3.4.2`；`docker` 模式下预构建镜像或私有仓库镜像地址 |
 | `MINERU_WORKER_CONTAINER_NAME` | `mineru_gpu_worker` |
 | `MINERU_API_URL` | `http://mineru_worker:8000`；宿主机运行网关需单独提供可访问的 Worker 地址 |
 | `DOCKER_HOST` | Docker SDK 连接配置；示例：`unix:///var/run/docker.sock` |
