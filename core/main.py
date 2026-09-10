@@ -50,7 +50,7 @@ app = create_app()
 
 if __name__ == "__main__":
 	listen_host = settings.SENTRY_HOST or "0.0.0.0"
-	raw_port = settings.SERVICE_PORT or settings.SENTRY_PORT
+	raw_port = settings.SERVICE_PORT
 	listen_port = int(raw_port) if raw_port else 8080
 	config = uvicorn.Config(
 		app, host=listen_host, port=listen_port, log_config=None, access_log=True,

@@ -10,10 +10,9 @@ CONFIG_FILE_PATH = os.getenv("CONFIG_FILE_PATH", ".env.dev")
 print(f"ENV_PATH: {CONFIG_FILE_PATH}")
 env = load_env(CONFIG_FILE_PATH)
 
-# Server and logging configuration; legacy port variables remain supported.
+# Server and logging configuration.
 SERVICE_PORT = env.get("SERVICE_PORT")
 SENTRY_HOST = env.get("SENTRY_HOST")
-SENTRY_PORT = env.get("SENTRY_PORT")
 LOG_PATH = env.get("LOG_PATH")
 LOG_NAME = env.get("LOG_NAME")
 LOG_LEVEL = env.get("LOG_LEVEL")
@@ -74,15 +73,20 @@ TORCH_HOME = env.get("TORCH_HOME")
 XDG_CACHE_HOME = env.get("XDG_CACHE_HOME")
 
 # Container image build and deploy configuration.
-MINERU_IMAGE_TYPE = env.get("MINERU_IMAGE_TYPE")
+MINERU_IMAGE_TYPE = env.get("MINERU_IMAGE_TYPE") or "local"
+MINERU_IMAGE_LOCAL = env.get("MINERU_IMAGE_LOCAL") or "mineru-api:5090-source"
+MINERU_IMAGE_DOCKER = env.get("MINERU_IMAGE_DOCKER") or ""
+MINERU_IMAGE = (
+	MINERU_IMAGE_DOCKER
+	if MINERU_IMAGE_TYPE == "docker" and MINERU_IMAGE_DOCKER
+	else (env.get("MINERU_IMAGE") or MINERU_IMAGE_LOCAL)
+)
 MINERU_SOURCE_DIR = env.get("MINERU_SOURCE_DIR")
 MINERU_BASE_IMAGE = env.get("MINERU_BASE_IMAGE")
-MINERU_IMAGE = env.get("MINERU_IMAGE")
 SENTRY_IMAGE = env.get("SENTRY_IMAGE")
 MINERU_GPU_DEVICE_ID = env.get("MINERU_GPU_DEVICE_ID")
 MINERU_SHM_SIZE = env.get("MINERU_SHM_SIZE")
 SENTRY_BIND_ADDRESS = env.get("SENTRY_BIND_ADDRESS")
-SENTRY_PUBLISHED_PORT = env.get("SENTRY_PUBLISHED_PORT")
 
 # Durable PDF checkpoint size and per-batch worker polling deadline.
 PARSE_BATCH_PAGES = env.get("PARSE_BATCH_PAGES")
