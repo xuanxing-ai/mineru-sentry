@@ -27,9 +27,9 @@ class TaskExecutorService:
 		self._lock = threading.RLock()
 		self._running_tasks: set[str] = set()
 		self.batch_pages = int(settings.PARSE_BATCH_PAGES or ParserDefaultConstant.DEFAULT_BATCH_PAGES)
-		self.task_timeout = int(settings.WORKER_TASK_TIMEOUT_SECONDS or ParserDefaultConstant.DEFAULT_TASK_TIMEOUT_SECONDS)
+		self.task_timeout = int(settings.DEFAULT_MINERU_TASK_RESULT_TIMEOUT_SECONDS or ParserDefaultConstant.DEFAULT_TASK_TIMEOUT_SECONDS)
 		if self.batch_pages < 1 or self.task_timeout < 1:
-			raise ValueError("PARSE_BATCH_PAGES and WORKER_TASK_TIMEOUT_SECONDS must be positive")
+			raise ValueError("PARSE_BATCH_PAGES and DEFAULT_MINERU_TASK_RESULT_TIMEOUT_SECONDS must be positive")
 
 	def is_running(self, task_id: str) -> bool:
 		"""Report ownership in this process, including tasks waiting for GPU startup."""
@@ -73,10 +73,12 @@ class TaskExecutorService:
 			for file_path in chk_dir.glob("*.md"):
 				if file_path.name in ("result.md", "document.md"):
 					continue
-				match = re.match(r"^(\d+)_(\d+)\.md$", file_path.name)
+				match = re.fullmatch(r"(\d+)_(\d+)\.md", file_path.name)
 				if match:
 					start_p = int(match.group(1))
 					end_p = int(match.group(2))
+					if start_p < task.start_page_id or end_p < start_p or end_p > task.end_page_id:
+						continue
 					if (start_p, end_p) not in known_pairs:
 						new_seg = TaskSegmentEntity(
 							id=uuid.uuid4().hex,
@@ -104,9 +106,12 @@ class TaskExecutorService:
 			if segment.end_page < next_page or segment.end_page > task.end_page_id:
 				continue
 			markdown_path = Path(segment.md_path) if segment.md_path else None
+			is_checkpoint = markdown_path and markdown_path.parent == Path(task.output_dir) / "checkpoints"
+			if segment.status != TaskStatusConstant.COMPLETED and not is_checkpoint:
+				continue
 			if not markdown_path or not markdown_path.is_file():
 				if segment.status == TaskStatusConstant.COMPLETED:
-					logging.warning("Saved result for pages %s-%s is missing from disk", segment.start_page, segment.end_page)
+					raise ValueError(f"Saved result for pages {segment.start_page}-{segment.end_page} is missing")
 				continue
 			segment.status = TaskStatusConstant.COMPLETED
 			segment.error_message = None
@@ -126,12 +131,9 @@ class TaskExecutorService:
 			if task is None:
 				return
 			completed = self.restore_checkpoint(session, task)
-			if resume_start_page is not None and resume_start_page > 0:
-				# Retain completed segments before resume_start_page (e.g. 0..208 for -s 209).
-				completed = [seg for seg in completed if seg.end_page < resume_start_page]
-				next_page = resume_start_page
-			else:
-				next_page = completed[-1].end_page + 1 if completed else task.start_page_id
+			next_page = completed[-1].end_page + 1 if completed else task.start_page_id
+			if resume_start_page is not None and resume_start_page > next_page:
+				raise ValueError(f"Cannot skip uncommitted pages: next page is {next_page}")
 
 			if next_page <= task.end_page_id:
 				docker_service.increment_active_tasks()
@@ -145,11 +147,11 @@ class TaskExecutorService:
 
 			while next_page <= task.end_page_id:
 				batch_end = min(next_page + self.batch_pages - 1, task.end_page_id)
-				if task.total_pages is None and task.end_page_id == ParserDefaultConstant.DEFAULT_END_PAGE:
+				if task.total_pages is None:
 					# Non-PDF inputs have no reliable page count: checkpoint the whole document.
 					batch_end = task.end_page_id
 				segments = TaskSegmentRepo.list_by_task_id(session, task_id)
-				segment = next((item for item in segments if item.start_page == next_page and item.end_page == batch_end and item.status == TaskStatusConstant.COMPLETED), None)
+				segment = next((item for item in segments if item.start_page == next_page and item.end_page == batch_end), None)
 				if segment is None:
 					checkpoint_path = Path(task.output_dir) / "checkpoints" / f"{next_page}_{batch_end}.md"
 					segment = TaskSegmentEntity(
@@ -163,7 +165,19 @@ class TaskExecutorService:
 				completed.append(segment)
 				next_page = segment.end_page + 1
 
-			markdown_paths = [Path(segment.md_path) for segment in completed if segment.md_path and Path(segment.md_path).is_file()]
+			# A successful response must cover the requested range without gaps or missing files.
+			expected_page = task.start_page_id
+			markdown_paths: List[Path] = []
+			for segment in completed:
+				if segment.start_page != expected_page or not segment.md_path:
+					raise ValueError("Cannot finalize a result with missing pages")
+				markdown_path = Path(segment.md_path)
+				if not markdown_path.is_file():
+					raise ValueError("Cannot finalize a result with a missing checkpoint")
+				markdown_paths.append(markdown_path)
+				expected_page = segment.end_page + 1
+			if expected_page != task.end_page_id + 1:
+				raise ValueError("Cannot finalize an incomplete page range")
 			final_path = Path(task.output_dir) / "result.md"
 			stitcher_service.stitch_segments(markdown_paths, final_path)
 			task.final_md_path = str(final_path)
