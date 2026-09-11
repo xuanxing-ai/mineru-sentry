@@ -21,6 +21,8 @@ class ParseTaskSubmitReq(BaseModel):
 	# Page range boundaries
 	start_page_id: int = Field(default=0, ge=0, description="Start page (0-indexed)")
 	end_page_id: int = Field(default=99999, ge=0, description="End page (0-indexed)")
+	# Force re-parse flag: clean previous records and checkpoints, restart from page 0
+	force: bool = Field(default=False, description="Force re-parse and clean previous task records and checkpoints")
 
 	@classmethod
 	def as_form(
@@ -32,9 +34,11 @@ class ParseTaskSubmitReq(BaseModel):
 		table_enable: bool = Form(True),
 		start_page_id: int = Form(0, ge=0),
 		end_page_id: int = Form(99999, ge=0),
+		force: bool = Form(False),
 		s: Optional[int] = Form(None, ge=0),
 		query_s: Optional[int] = Query(None, alias="s", ge=0),
 		query_start_page_id: Optional[int] = Query(None, alias="start_page_id", ge=0),
+		query_force: Optional[bool] = Query(None, alias="force"),
 	) -> "ParseTaskSubmitReq":
 		"""Bind multipart options and accept s as the short spelling of the resume offset from form or query."""
 		resolved_s = s if s is not None else query_s
@@ -44,10 +48,12 @@ class ParseTaskSubmitReq(BaseModel):
 		effective_start = resolved_s if resolved_s is not None else resolved_start
 		if effective_start > end_page_id:
 			raise HTTPException(status_code=422, detail="Start page exceeds end page")
+		resolved_force = bool(force or query_force)
 		return cls(
 			backend=backend, effort=effort, parse_method=parse_method,
 			formula_enable=formula_enable, table_enable=table_enable,
 			start_page_id=effective_start, end_page_id=end_page_id,
+			force=resolved_force,
 		)
 
 

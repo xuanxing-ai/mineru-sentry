@@ -234,6 +234,27 @@ class CheckpointResultTest(unittest.TestCase):
 		self.assertIn("/api/v1/parse/stream", paths)
 		self.assertIn("/api/v1/parse/by-filename/{filename}", paths)
 
+	def test_force_reparse_cleans_old_task(self):
+		"""When force=true, previous tasks and checkpoints are cleaned and a new task starts."""
+		self.mark_complete("Old result")
+		old_id = self.task_id
+		from unittest.mock import MagicMock
+		from core.dto.task_req import ParseTaskSubmitReq
+		mock_file = MagicMock()
+		mock_file.filename = self.filename
+		mock_file.file = io.BytesIO(self.pdf)
+		req = ParseTaskSubmitReq(force=True)
+		new_task_id = parse_service.prepare_task(mock_file, req)
+		self.assertNotEqual(new_task_id, old_id)
+		session = postgres_init.SessionLocal()
+		try:
+			self.assertIsNone(ParseTaskRepo.get_by_id(session, old_id))
+			new_task = ParseTaskRepo.get_by_id(session, new_task_id)
+			self.assertIsNotNone(new_task)
+			self.assertEqual(new_task.file_name, self.filename)
+		finally:
+			session.close()
+
 
 if __name__ == "__main__":
 	unittest.main()

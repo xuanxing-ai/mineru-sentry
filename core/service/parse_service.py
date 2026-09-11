@@ -3,6 +3,7 @@ import hashlib
 import logging
 import os
 from pathlib import Path
+import shutil
 import threading
 import time
 from typing import Iterator, List, Optional
@@ -77,6 +78,21 @@ class ParseService:
 				session = postgres_init.SessionLocal()
 				try:
 					past_records = ParseTaskRepo.list_by_file_name(session, safe_name)
+					is_force = req.force
+					if is_force and past_records:
+						for old_task in past_records:
+							old_task_id = old_task.id
+							task_executor_service.cancel_task(old_task_id)
+							TaskSegmentRepo.delete_by_task_id(session, old_task_id)
+							ParseTaskRepo.delete(session, old_task_id)
+							old_output_dir = old_task.output_dir
+							if old_output_dir:
+								shutil.rmtree(old_output_dir, ignore_errors=True)
+							old_final_path = old_task.final_md_path
+							if old_final_path:
+								Path(old_final_path).unlink(missing_ok=True)
+						past_records = []
+
 					task = past_records[0] if past_records else None
 					if task is not None:
 						if task.file_hash != file_hash:
@@ -92,7 +108,7 @@ class ParseService:
 							task.end_page_id = end_page
 							ParseTaskRepo.update(session, task)
 					else:
-						if req.start_page_id:
+						if req.start_page_id and not is_force:
 							raise HTTPException(status_code=409, detail="No saved prefix exists; submit this document from page 0 first")
 						task_id = uuid.uuid4().hex
 						task_dir = storage_root / "tasks" / task_id
@@ -115,7 +131,8 @@ class ParseService:
 						os.replace(temporary_path, task.file_path)
 				finally:
 					session.close()
-				self.resume_task(task_id, req.start_page_id)
+				start_offset = 0 if is_force else req.start_page_id
+				self.resume_task(task_id, start_offset)
 				return task_id
 		finally:
 			temporary_path.unlink(missing_ok=True)

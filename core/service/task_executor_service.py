@@ -26,6 +26,7 @@ class TaskExecutorService:
 		"""Initialize execution ownership and bounded batch settings."""
 		self._lock = threading.RLock()
 		self._running_tasks: set[str] = set()
+		self._cancelled_tasks: set[str] = set()
 		self.batch_pages = int(settings.PARSE_BATCH_PAGES or ParserDefaultConstant.DEFAULT_BATCH_PAGES)
 		self.task_timeout = int(settings.DEFAULT_MINERU_TASK_RESULT_TIMEOUT_SECONDS or ParserDefaultConstant.DEFAULT_TASK_TIMEOUT_SECONDS)
 		if self.batch_pages < 1 or self.task_timeout < 1:
@@ -34,7 +35,16 @@ class TaskExecutorService:
 	def is_running(self, task_id: str) -> bool:
 		"""Report ownership in this process, including tasks waiting for GPU startup."""
 		with self._lock:
-			return task_id in self._running_tasks
+			return task_id in self._running_tasks and task_id not in self._cancelled_tasks
+
+	def cancel_task(self, task_id: str) -> None:
+		"""
+		Marks a task as cancelled so that its background thread will terminate promptly.
+		:param task_id: Primary key string of task to cancel.
+		"""
+		with self._lock:
+			if task_id in self._running_tasks:
+				self._cancelled_tasks.add(task_id)
 
 	def start_task_in_background(self, task_id: str, resume_start_page: Optional[int] = None) -> None:
 		"""Join an existing execution or resume persisted work after a process restart."""
@@ -146,6 +156,10 @@ class TaskExecutorService:
 				ParseTaskRepo.update(session, task)
 
 			while next_page <= task.end_page_id:
+				with self._lock:
+					if task_id in self._cancelled_tasks:
+						logging.info("Task %s was cancelled by user request, aborting execution.", task_id)
+						return
 				batch_end = min(next_page + self.batch_pages - 1, task.end_page_id)
 				if task.total_pages is None:
 					# Non-PDF inputs have no reliable page count: checkpoint the whole document.
@@ -199,6 +213,7 @@ class TaskExecutorService:
 				docker_service.decrement_active_tasks()
 			with self._lock:
 				self._running_tasks.discard(task_id)
+				self._cancelled_tasks.discard(task_id)
 
 	def execute_segment(self, session, task: ParseTaskEntity, segment: TaskSegmentEntity) -> None:
 		"""Retry a batch, reconnect to its worker task, and atomically commit its text and page range."""

@@ -70,3 +70,15 @@ class TaskSegmentRepo:
 			.order_by(TaskSegmentEntity.segment_order.asc())
 			.all()
 		)
+
+	@staticmethod
+	def delete_by_task_id(session: Session, task_id: str) -> None:
+		"""
+		Deletes all TaskSegmentEntity instances belonging to a specific task.
+		:param session: Active SQLAlchemy database session.
+		:param task_id: Primary key of the parent parse task.
+		"""
+		target_query = session.query(TaskSegmentEntity).filter(TaskSegmentEntity.task_id == task_id)
+		target_query.delete(synchronize_session=False)
+		session.commit()
+
