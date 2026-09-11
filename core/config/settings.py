@@ -1,6 +1,8 @@
 """Shared configuration loaded from a selected file and process environment."""
 import json
 import os
+import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import Optional
@@ -92,6 +94,8 @@ MINERU_BASE_IMAGE = env.get("MINERU_BASE_IMAGE")
 SENTRY_IMAGE = env.get("SENTRY_IMAGE")
 MINERU_GPU_DEVICE_ID = env.get("MINERU_GPU_DEVICE_ID")
 MINERU_SHM_SIZE = env.get("MINERU_SHM_SIZE")
+GPU_MEMORY_UTILIZATION_SIZE = env.get("GPU_MEMORY_UTILIZATION_SIZE")
+GPU_MEMORY_UTILIZATION = env.get("GPU_MEMORY_UTILIZATION")
 SENTRY_BIND_ADDRESS = env.get("SENTRY_BIND_ADDRESS")
 
 # Durable PDF checkpoint size and per-batch worker polling deadline.
@@ -112,12 +116,67 @@ DEFAULT_TABLE_ENABLE = env.get("DEFAULT_TABLE_ENABLE")
 DEFAULT_IMAGE_ANALYSIS = env.get("DEFAULT_IMAGE_ANALYSIS")
 
 
+def _resolve_or_link_model_dir(
+	base_dir: Path,
+	configured_dir_str: Optional[str],
+	repo_mode: str,
+	candidate_rel_paths: list[str],
+) -> str:
+	"""
+	Resolve model directory and link cache models to default paths if not present.
+	:param base_dir: Base model storage root directory.
+	:param configured_dir_str: Explicit directory path from settings or None.
+	:param repo_mode: Mode name, either 'pipeline' or 'vlm'.
+	:param candidate_rel_paths: List of relative paths under base_dir to search for cached models.
+	:return: Resolved directory path string.
+	"""
+	target_path = Path(configured_dir_str) if configured_dir_str else (base_dir / repo_mode)
+	if target_path.exists():
+		return str(target_path)
+
+	for candidate_rel in candidate_rel_paths:
+		candidate_path = base_dir / candidate_rel
+		if candidate_path.exists():
+			try:
+				target_path.symlink_to(candidate_path)
+				print(f"Created symlink for {repo_mode}: {target_path} -> {candidate_path}")
+				return str(target_path)
+			except (OSError, PermissionError):
+				return str(candidate_path)
+
+	return str(target_path)
+
+
 def generate_mineru_config(target_path: Optional[str] = None) -> Optional[str]:
 	"""Generate mineru.json dynamically from settings without manual user intervention."""
 	config_path_str = target_path or MINERU_CONFIG_FILE or "/usr/model/MinerU/mineru.json"
 	config_file = Path(config_path_str)
-	pipeline_dir = MINERU_PIPELINE_MODEL_DIR or str(config_file.parent / "pipeline")
-	vlm_dir = MINERU_VLM_MODEL_DIR or str(config_file.parent / "vlm")
+	base_dir = config_file.parent
+
+	pipeline_candidates = [
+		"cache/modelscope/models/OpenDataLab/PDF-Extract-Kit-1.0",
+		"cache/modelscope/models/OpenDataLab/PDF-Extract-Kit-1___0",
+		"cache/huggingface/models/opendatalab/PDF-Extract-Kit-1.0",
+	]
+	pipeline_dir = _resolve_or_link_model_dir(
+		base_dir=base_dir,
+		configured_dir_str=MINERU_PIPELINE_MODEL_DIR,
+		repo_mode="pipeline",
+		candidate_rel_paths=pipeline_candidates,
+	)
+
+	vlm_candidates = [
+		"cache/modelscope/models/OpenDataLab/MinerU2.5-Pro-2605-1.2B",
+		"cache/modelscope/models/OpenDataLab/MinerU2___5-Pro-2605-1___2B",
+		"cache/huggingface/models/opendatalab/MinerU2.5-Pro-2605-1.2B",
+	]
+	vlm_dir = _resolve_or_link_model_dir(
+		base_dir=base_dir,
+		configured_dir_str=MINERU_VLM_MODEL_DIR,
+		repo_mode="vlm",
+		candidate_rel_paths=vlm_candidates,
+	)
+
 	model_source = MINERU_MODEL_SOURCE or "modelscope"
 
 	content = {
@@ -144,8 +203,63 @@ def generate_mineru_config(target_path: Optional[str] = None) -> Optional[str]:
 		return None
 
 
+
+
+def compute_gpu_memory_utilization(
+	target_size_str: Optional[str] = None,
+	total_vram_gb: Optional[float] = None,
+) -> Optional[float]:
+	"""
+	Calculate the vLLM gpu_memory_utilization ratio based on the target memory size string.
+	:param target_size_str: Target memory string like '16gb', '8gb', '12g', or '8192mb'.
+	:param total_vram_gb: Optional total GPU VRAM in GB. If omitted, attempts to auto-detect.
+	:return: Calculated float ratio (e.g. 0.5025) clamped between 0.05 and 0.95, or None.
+	"""
+	raw_target = target_size_str or GPU_MEMORY_UTILIZATION_SIZE
+	if not raw_target:
+		return None
+	
+	cleaned_target = raw_target.strip().lower()
+	regex_pattern = r"^([0-9.]+)\s*(gb|g|mb|m)?$"
+	matched_result = re.match(regex_pattern, cleaned_target)
+	if not matched_result:
+		return None
+	
+	size_str = matched_result.group(1)
+	unit_str = matched_result.group(2) or "gb"
+	parsed_value = float(size_str)
+	is_gb = unit_str in ("gb", "g")
+	requested_gb = parsed_value if is_gb else (parsed_value / 1024.0)
+	
+	detected_vram_gb = total_vram_gb
+	if detected_vram_gb is None:
+		try:
+			query_args = ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"]
+			command_output = subprocess.check_output(query_args, text=True, stderr=subprocess.DEVNULL)
+			output_line = command_output.strip().split("\n")[0].strip()
+			if output_line:
+				detected_vram_gb = float(output_line) / 1024.0
+		except Exception:
+			pass
+	
+	if detected_vram_gb and detected_vram_gb > 0:
+		computed_ratio = requested_gb / detected_vram_gb
+		bounded_ratio = min(max(computed_ratio, 0.05), 0.95)
+		rounded_ratio = round(bounded_ratio, 4)
+		return rounded_ratio
+	
+	return None
+
+
+if not GPU_MEMORY_UTILIZATION and GPU_MEMORY_UTILIZATION_SIZE:
+	calculated_ratio = compute_gpu_memory_utilization(target_size_str=GPU_MEMORY_UTILIZATION_SIZE)
+	if calculated_ratio is not None:
+		GPU_MEMORY_UTILIZATION = str(calculated_ratio)
+
+
 # Automatically ensure mineru.json is generated upon settings initialization
 generate_mineru_config()
 
 if __name__ == "__main__":
 	generate_mineru_config()
+
