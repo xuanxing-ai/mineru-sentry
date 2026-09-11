@@ -8,9 +8,9 @@ deploy_directory=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 project_root=$(CDPATH= cd -- "$deploy_directory/../.." && pwd)
 
 # Load configuration if available
-if [ -r "$project_root/core/config/.env.dev" ]; then
+if [ -r "$project_root/core/config/.env.prod" ]; then
 	set -a
-	. "$project_root/core/config/.env.dev"
+	. "$project_root/core/config/.env.prod"
 	set +a
 fi
 
