@@ -36,6 +36,14 @@ else
 	export XDG_CACHE_HOME="${XDG_CACHE_HOME:-/usr/model/MinerU/cache}"
 fi
 
+shm_size_from_file=$(grep -E '^[[:space:]]*MINERU_SHM_SIZE=' "$env_file" 2>/dev/null | tail -n 1 | cut -d '=' -f2- | tr -d '"' | tr -d "'" | tr -d '[:space:]')
+MINERU_SHM_SIZE="${MINERU_SHM_SIZE:-${shm_size_from_file:-16gb}}"
+export MINERU_SHM_SIZE
+
+gpu_mem_size_from_file=$(grep -E '^[[:space:]]*GPU_MEMORY_UTILIZATION_SIZE=' "$env_file" 2>/dev/null | tail -n 1 | cut -d '=' -f2- | tr -d '"' | tr -d "'" | tr -d '[:space:]')
+GPU_MEMORY_UTILIZATION_SIZE="${GPU_MEMORY_UTILIZATION_SIZE:-${gpu_mem_size_from_file:-}}"
+export GPU_MEMORY_UTILIZATION_SIZE
+
 prepare_images() {
 	if [ "$MINERU_IMAGE_TYPE" = "docker" ]; then
 		if [ -z "${MINERU_IMAGE:-}" ]; then
@@ -68,6 +76,27 @@ run_download() {
 	echo "Downloading MinerU models (source: $source_flag, models: $models_flag)..."
 	docker compose --env-file "$env_file" -f "$deploy_directory/compose.yaml" \
 		run --rm --no-deps mineru_worker mineru-models-download -s "$source_flag" -m "$models_flag" "$@"
+
+	base_model_dir="${MINERU_CONFIG_FILE%/*}"
+	base_model_dir="${base_model_dir:-/usr/model/MinerU}"
+	if [ -d "$base_model_dir" ]; then
+		if [ ! -e "$base_model_dir/pipeline" ]; then
+			for p in "$base_model_dir/cache/modelscope/models/OpenDataLab/PDF-Extract-Kit-1.0" "$base_model_dir/cache/modelscope/models/OpenDataLab/PDF-Extract-Kit-1___0"; do
+				if [ -d "$p" ]; then
+					ln -sfn "$p" "$base_model_dir/pipeline" 2>/dev/null || true
+					break
+				fi
+			done
+		fi
+		if [ ! -e "$base_model_dir/vlm" ]; then
+			for p in "$base_model_dir/cache/modelscope/models/OpenDataLab/MinerU2.5-Pro-2605-1.2B" "$base_model_dir/cache/modelscope/models/OpenDataLab/MinerU2___5-Pro-2605-1___2B"; do
+				if [ -d "$p" ]; then
+					ln -sfn "$p" "$base_model_dir/vlm" 2>/dev/null || true
+					break
+				fi
+			done
+		fi
+	fi
 }
 
 if [ "${1:-}" = "download" ]; then
