@@ -38,7 +38,35 @@ services:
     pull_policy: ${MINERU_PULL_POLICY:-never}
     container_name: ${MINERU_WORKER_CONTAINER_NAME:-mineru_gpu_worker}
     restart: "no"
-    entrypoint: ["/bin/bash", "-c", "export MINERU_MODEL_SOURCE=local && exec \"$@\"", "--"]
+    entrypoint:
+      - /bin/bash
+      - -c
+      - |
+        export MINERU_MODEL_SOURCE="$${MINERU_MODEL_SOURCE:-local}"
+        UTIL_ARG=""
+        if [ -n "$$GPU_MEMORY_UTILIZATION" ]; then
+          UTIL_ARG="--gpu-memory-utilization $$GPU_MEMORY_UTILIZATION"
+        elif [ -n "$$GPU_MEMORY_UTILIZATION_SIZE" ]; then
+          CALC_RATIO=$$(python3 -c "
+        import os, re, torch
+        target = os.getenv('GPU_MEMORY_UTILIZATION_SIZE', '').strip().lower()
+        if target and torch.cuda.is_available():
+            m = re.match(r'^([0-9.]+)\s*(gb|g|mb|m)?$$', target)
+            if m:
+                val = float(m.group(1))
+                unit = m.group(2) or 'gb'
+                req_gb = val if unit in ('gb', 'g') else (val / 1024.0)
+                total_gb = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
+                ratio = round(req_gb / total_gb, 4)
+                print(f'{min(max(ratio, 0.05), 0.95):.4f}')
+        " 2>/dev/null || true)
+          if [ -n "$$CALC_RATIO" ]; then
+            echo "[MinerU Worker] Configured GPU_MEMORY_UTILIZATION_SIZE=$$GPU_MEMORY_UTILIZATION_SIZE -> --gpu-memory-utilization $$CALC_RATIO"
+            UTIL_ARG="--gpu-memory-utilization $$CALC_RATIO"
+          fi
+        fi
+        exec "$$@" $$UTIL_ARG
+      - "--"
     command: ["mineru-api", "--host", "0.0.0.0", "--port", "8000"]
     shm_size: ${MINERU_SHM_SIZE:-16gb}
     ulimits:
@@ -52,6 +80,8 @@ services:
               device_ids: ["${MINERU_GPU_DEVICE_ID:-0}"]
               capabilities: [gpu]
     environment:
+      - GPU_MEMORY_UTILIZATION_SIZE=${GPU_MEMORY_UTILIZATION_SIZE:-}
+      - GPU_MEMORY_UTILIZATION=${GPU_MEMORY_UTILIZATION:-}
       - MINERU_TOOLS_CONFIG_JSON=${MINERU_CONFIG_FILE:-}
       - MINERU_MODEL_SOURCE=${MINERU_MODEL_SOURCE:-local}
       - MINERU_DEVICE_MODE=${MINERU_DEVICE_MODE:-cuda}
