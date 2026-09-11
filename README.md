@@ -227,6 +227,7 @@ Parsing options are passed as **multipart form fields** per request:
 | `formula_enable`, `table_enable` | `true`, `true` | Formula detection and table extraction |
 | `start_page_id`, `end_page_id` | `0`, `99999` | Zero-indexed page range |
 | `s` | None (auto-detect) | Explicit resume offset, equivalent to `start_page_id` |
+| `force` | `false` | When `true`, cleans existing task records/checkpoints for this filename and forces fresh GPU re-parsing from page 0 |
 
 ---
 
