@@ -9,6 +9,8 @@ services:
     pull_policy: never
     container_name: mineru-sentry
     restart: unless-stopped
+    env_file:
+      - ${ENV_FILE:-../../core/config/.env.example}
     environment:
       - PYTHONPATH=/app
     ports:
