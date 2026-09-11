@@ -9,6 +9,8 @@ services:
     pull_policy: never
     container_name: mineru-sentry
     restart: unless-stopped
+    environment:
+      - PYTHONPATH=/app
     ports:
       - "${SENTRY_BIND_ADDRESS:-0.0.0.0}:${SERVICE_PORT:-8080}:${SERVICE_PORT:-8080}"
     volumes:
@@ -32,6 +34,7 @@ services:
     pull_policy: ${MINERU_PULL_POLICY:-never}
     container_name: ${MINERU_WORKER_CONTAINER_NAME:-mineru_gpu_worker}
     restart: "no"
+    entrypoint: ["/bin/bash", "-c", "export MINERU_MODEL_SOURCE=local && exec \"$@\"", "--"]
     command: ["mineru-api", "--host", "0.0.0.0", "--port", "8000"]
     shm_size: ${MINERU_SHM_SIZE:-16gb}
     ulimits:
