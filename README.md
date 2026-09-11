@@ -207,6 +207,8 @@ All configuration items are managed via a single configuration file (default `co
 | `MINERU_IMAGE_LOCAL` | `mineru-api:5090-source`; image name and tag for local source build mode |
 | `MINERU_IMAGE_DOCKER` | `alexsuntop/mineru:3.4.2`; remote prebuilt image or custom private registry when `MINERU_IMAGE_TYPE=docker` |
 | `MINERU_WORKER_CONTAINER_NAME` | `mineru_gpu_worker` |
+| `MINERU_SHM_SIZE` | `16gb`; shared memory size (`/dev/shm`) allocated to the GPU worker container |
+| `GPU_MEMORY_UTILIZATION_SIZE` | `16gb` (e.g. `8gb`, `16gb`); target vLLM GPU memory size; dynamically converts to `gpu_memory_utilization` ratio passed to vLLM |
 | `MINERU_API_URL` | `http://mineru_worker:8000`; worker endpoint accessible by the gateway |
 | `DOCKER_HOST` | Docker socket path; defaults to `unix:///var/run/docker.sock` |
 | `IDLE_TIMEOUT_SECONDS` | `900`; idle countdown threshold; checked by monitor loop every 10 seconds |
