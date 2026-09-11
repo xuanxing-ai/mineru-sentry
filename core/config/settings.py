@@ -12,7 +12,7 @@ if _project_root not in sys.path:
 
 from core.util.env_util import load_env
 
-CONFIG_FILE_PATH = os.getenv("CONFIG_FILE_PATH", ".env.dev")
+CONFIG_FILE_PATH = os.getenv("CONFIG_FILE_PATH", ".env.prod")
 print(f"ENV_PATH: {CONFIG_FILE_PATH}")
 env = load_env(CONFIG_FILE_PATH)
 
