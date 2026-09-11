@@ -89,7 +89,12 @@ if [ "${1:-}" = "init" ]; then
 	echo "==> 3/4 [Create] 创建待机 Worker 容器..."
 	docker compose --env-file "$env_file" -f "$deploy_directory/compose.yaml" create mineru_worker
 	echo "==> 4/4 [Up] 后台启动网关服务..."
-	exec docker compose --env-file "$env_file" -f "$deploy_directory/compose.yaml" up -d sentry
+	docker compose --env-file "$env_file" -f "$deploy_directory/compose.yaml" up -d sentry
+	sleep 2
+	container_name=$(docker compose --env-file "$env_file" -f "$deploy_directory/compose.yaml" ps -a --format '{{.Name}}' sentry)
+	echo "==> 网关启动日志 (docker logs ${container_name:-mineru-sentry}):"
+	docker logs "${container_name:-mineru-sentry}"
+	exit 0
 fi
 
 if [ "${1:-}" = "build" ] && [ "$MINERU_IMAGE_TYPE" = "docker" ]; then
@@ -145,3 +150,4 @@ fi
 
 echo "Using configuration: $env_file"
 exec docker compose --env-file "$env_file" -f "$deploy_directory/compose.yaml" "$@"
+
