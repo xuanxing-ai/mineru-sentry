@@ -10,14 +10,16 @@ services:
     container_name: mineru-sentry
     restart: unless-stopped
     env_file:
-      - ${ENV_FILE:-../../core/config/.env.example}
+      - ../../core/config/${CONFIG_FILE_PATH:-.env.prod}
     environment:
       - PYTHONPATH=/app
+      - CONFIG_FILE_PATH=${CONFIG_FILE_PATH:-.env.prod}
     ports:
       - "${SENTRY_BIND_ADDRESS:-0.0.0.0}:${SERVICE_PORT:-8080}:${SERVICE_PORT:-8080}"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - /usr/model/MinerU:/usr/model/MinerU
+      - ../../core/config/${CONFIG_FILE_PATH:-.env.prod}:/app/core/config/${CONFIG_FILE_PATH:-.env.prod}:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks: [mineru_net]
