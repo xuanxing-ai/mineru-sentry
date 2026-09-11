@@ -229,6 +229,7 @@ curl --fail-with-body -X POST http://localhost:8080/api/v1/parse/by-filename/doc
 | `formula_enable`、`table_enable` | `true` |
 | `start_page_id`、`end_page_id` | `0`、`99999`（从 0 开始的页码索引） |
 | `s` | 可选的恢复页码，等价于 `start_page_id`；默认自动恢复 |
+| `force` | `false`（默认无需传）；传 `true` 时清理该同名文件的旧任务记录与检查点缓存，强制从第 0 页重新全量执行 GPU 识别 |
 
 ## 运维与 API 参考
 
