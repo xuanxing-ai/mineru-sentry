@@ -23,4 +23,5 @@ RUN set -- /tmp/mineru-wheel/mineru-*.whl && \
     rm -rf /tmp/mineru-wheel
 
 WORKDIR /usr/model/MinerU
+ENTRYPOINT ["/bin/bash", "-c", "export MINERU_MODEL_SOURCE=local && exec \"$@\"", "--"]
 CMD ["mineru-api", "--host", "0.0.0.0", "--port", "8000"]
