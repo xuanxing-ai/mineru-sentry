@@ -118,7 +118,7 @@ $EDITOR core/config/.env.prod
 ### 2. Deploy & Launch
 
 #### Option A: One-Click Initial Setup (Recommended)
-Builds images, downloads models, creates the standby worker container, and starts the gateway:
+Cleans old containers, builds images, downloads models, creates the standby worker container, and starts the gateway:
 ```bash
 ./docs/deploy/compose.sh init
 ```
