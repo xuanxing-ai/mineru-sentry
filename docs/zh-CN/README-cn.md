@@ -209,6 +209,8 @@ curl --fail-with-body -X POST http://localhost:8080/api/v1/parse/by-filename/doc
 | `MINERU_IMAGE_LOCAL` | `mineru-api:5090-source`；本地源码编译模式生成的镜像名与标签 |
 | `MINERU_IMAGE_DOCKER` | `alexsuntop/mineru:3.4.2`；`docker` 模式下预构建镜像或私有仓库镜像地址 |
 | `MINERU_WORKER_CONTAINER_NAME` | `mineru_gpu_worker` |
+| `MINERU_SHM_SIZE` | `16gb`；分配给 Worker 容器的共享内存 (`/dev/shm`) 大小 |
+| `GPU_MEMORY_UTILIZATION_SIZE` | `16gb`（如 `8gb`, `16gb`）；vLLM 推理引擎显存配额，系统自动结合总显存换算为 `gpu_memory_utilization` 比例传给 vLLM |
 | `MINERU_API_URL` | `http://mineru_worker:8000`；宿主机运行网关需单独提供可访问的 Worker 地址 |
 | `DOCKER_HOST` | Docker SDK 连接配置；示例：`unix:///var/run/docker.sock` |
 | `IDLE_TIMEOUT_SECONDS` | `900`；监控每 10 秒检查一次 |
