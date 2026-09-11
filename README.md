@@ -2,32 +2,95 @@
 
 English | [简体中文](docs/zh-CN/README-cn.md)
 
-**On-demand GPU gateway for self-hosted MinerU: receives document parsing requests over HTTP, records tasks in PostgreSQL, streams raw Markdown, and stops workers when idle to reclaim RTX 5090 VRAM.**
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
+[![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688.svg?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![Docker Compose](https://img.shields.io/badge/Docker_Compose-2.17+-2496ED.svg?logo=docker&logoColor=white)](https://docs.docker.com/compose/)
+[![MinerU Upstream](https://img.shields.io/badge/MinerU-Upstream-orange.svg)](https://github.com/opendatalab/MinerU)
 
-[Quick Start](#quick-start) · [Parsing & Resumable Streams](#parsing-and-resumable-streams) · [Configuration](#configuration) · [API Reference](#operations-and-api-reference) · [Upstream MinerU](https://github.com/opendatalab/MinerU)
+**On-demand GPU standby gateway for self-hosted MinerU: receives document parsing requests over HTTP, records durable page-by-page checkpoints in PostgreSQL, streams raw Markdown, and stops the worker container when idle to reclaim RTX 5090 VRAM.**
 
-```mermaid
-flowchart LR
-    Client[Client Request] --> Sentry[Sentry HTTP Gateway]
-    Sentry --> DB[(PostgreSQL Tasks & Checkpoints)]
-    Sentry -->|Wake On-Demand| Worker[MinerU GPU Worker]
-    Worker -->|Batch Markdown Output| Sentry
-    Sentry --> Files[Durable Checkpoints & Stitched Output]
-    Sentry -->|Direct Markdown / Chunked Stream| Client
-    Sentry -.->|Idle Timeout Auto-Stop| Worker
+[Quick Start](#quick-start) · [Core Highlights](#why-mineru-sentry) · [Parsing & Streams](#parsing--resumable-streams) · [Architecture & Lifecycle](#architecture--gpu-lifecycle) · [API Reference](#operations--api-reference) · [Configuration](#configuration)
+
+---
+
+### Real Terminal Evidence
+
+#### 1. Zero-VRAM Standby Verification
+When no tasks are running, the GPU worker container remains in `created` or `exited` status with **0 MB VRAM allocated**:
+
+```bash
+$ curl -s http://localhost:8080/api/v1/system/gpu/status
+{
+  "container_name": "mineru_gpu_worker",
+  "container_status": "created",
+  "is_gpu_active": false,
+  "idle_countdown_seconds": null,
+  "active_tasks_count": 0,
+  "mineru_api_healthy": false
+}
 ```
 
-Compose does not allocate GPUs to the Sentry gateway itself; all neural inference is isolated within the GPU worker container. Sentry manages a **pre-created container** lifecycle: waking it when tasks arrive, waiting for health checks to pass, and stopping it after a configurable idle period to keep GPU VRAM at 0 MB during standby.
+#### 2. Direct Markdown in HTTP Response Body
+Submitting a document automatically wakes the worker, checkpoints every page, and returns clean Markdown text without requiring ZIP downloads or file decompression:
+
+```bash
+$ curl -s --fail-with-body http://localhost:8080/api/v1/parse \
+    -F 'file=@attention_paper.pdf' \
+    -F 'backend=hybrid-engine' \
+    -F 'effort=medium'
+# Attention Is All You Need
+
+## Abstract
+The dominant sequence transduction models are based on complex recurrent or convolutional neural networks...
+```
+
+---
 
 ## Why MinerU-Sentry
 
-- **Direct Markdown in the response body.** Standard endpoints return complete parsed Markdown once finished; streaming endpoints push Markdown chunks as page batches complete. No ZIP archives, no download attachments, and no internal filesystem paths are exposed to callers.
-- **Deduplicated and reconnectable tasks.** Files with identical names and contents automatically reuse existing tasks: completed tasks return cached results instantly; interrupted tasks resume from the last durable checkpoint; in-flight tasks attach to the existing execution.
-- **Durable page-by-page checkpoints.** PDF parsing defaults to 1 page per batch. Each batch is atomically written to disk and committed to PostgreSQL before advancing. If an interruption or crash occurs, execution safely resumes from the saved checkpoint without repeating expensive GPU inference.
-- **Zero-VRAM on-demand GPU management.** Gateway and PostgreSQL run continuously with minimal footprint. When a parsing request arrives, Sentry wakes the GPU worker container; after 15 minutes (configurable) of no active tasks, Sentry stops the container and frees all RTX 5090 VRAM.
+- **Zero-VRAM Standby & On-Demand Lifecycle:** Sentry gateway and PostgreSQL run continuously with a minimal footprint (~50 MB RAM). When a parsing request arrives, Sentry dynamically wakes the pre-created GPU worker container; after 15 minutes of idle time (configurable via `IDLE_TIMEOUT_SECONDS`), Sentry automatically stops the container, completely freeing RTX 5090 / 4090 VRAM for local LLM inference or training.
+- **Direct Markdown Delivery & Resumable Streams:** Standard endpoints return complete, stitched Markdown text directly in the HTTP body. Streaming endpoints (`POST /api/v1/parse/stream`) replay saved prefixes immediately and push new page batches as they finish. No ZIP archives, no download attachments, and no internal filesystem paths are exposed to callers.
+- **Durable Page-by-Page Checkpoint Resumption:** PDF parsing defaults to 1 page per batch (`PARSE_BATCH_PAGES=1`). Each batch is atomically written to disk and committed to PostgreSQL before advancing. If an interruption, timeout, or container restart occurs, parsing resumes from the exact saved checkpoint without repeating expensive GPU neural OCR or layout analysis.
+- **Automatic Task Deduplication & Reconnection:** Documents with matching filenames and SHA-256 content hashes automatically reuse existing tasks: completed tasks return cached results instantly; in-flight tasks attach to active execution; interrupted tasks resume from disk checkpoints.
+- **Single-File Unified Configuration:** Gateway, GPU Worker, and Docker Compose are driven by a single environment file (`core/config/.env.prod`, customizable via `CONFIG_FILE_PATH`). MinerU's internal `/usr/model/MinerU/mineru.json` is generated dynamically on startup and worker wake—no manual config editing required.
 
 > [!NOTE]
-> **Scope & Boundaries:** A single gateway process governs one GPU worker container. PDF inputs support granular page-level checkpoint resumption. Other formats are handled as whole documents.
+> **Scope & Boundaries:** A single gateway instance manages one dedicated GPU worker container on the host. PDF inputs support page-by-page checkpointing and resumption; other document formats are handled as whole units.
+
+---
+
+## Architecture & GPU Lifecycle
+
+### System Data Flow
+
+```mermaid
+flowchart LR
+    Client[Client HTTP Request] --> Sentry[Sentry HTTP Gateway]
+    Sentry --> DB[(PostgreSQL Tasks & Checkpoints)]
+    Sentry -->|Wake On-Demand| Worker[MinerU GPU Worker Container]
+    Worker -->|Batch Markdown Output| Sentry
+    Sentry --> Files[Durable Page Checkpoints & Stitched Output]
+    Sentry -->|Direct Markdown / Chunked Stream| Client
+    Sentry -.->|Idle Timeout: 15m Auto-Stop| Worker
+```
+
+### Worker Container Lifecycle State Machine
+
+```mermaid
+stateDiagram-v2
+    [*] --> Standby: compose.sh init / create (0 MB VRAM)
+    Standby --> Waking: Parse Request (POST /api/v1/parse)
+    Standby --> Waking: Manual Wake (POST /api/v1/system/gpu/wake)
+    Waking --> Active: Worker Health Check Passed (/health 200 OK)
+    Active --> Active: Process Page Batches & Commit Checkpoints
+    Active --> IdleCountdown: All Active Tasks Completed
+    IdleCountdown --> Active: New Parse Task Arrives (Timer Reset)
+    IdleCountdown --> Standby: Idle Timeout Reached (default 900s) -> docker stop (0 MB VRAM)
+    Active --> Standby: Manual Sleep (POST /api/v1/system/gpu/sleep)
+```
+
+Compose does not assign GPU resources to the Sentry gateway itself; all neural inference is strictly isolated within the GPU worker container.
 
 ---
 
@@ -37,12 +100,12 @@ Run the following commands in the repository root on an RTX 5090 Linux host. Req
 
 ### 1. Configure Environment (Single Unified File)
 
-All configuration is consolidated in a single environment file (defaults to `core/config/.env.dev`, override via `CONFIG_FILE_PATH`):
+All configuration is consolidated in a single environment file (defaults to `core/config/.env.prod`, override via `CONFIG_FILE_PATH`):
 
 ```bash
 # Copy template and edit configuration
-cp core/config/.env.example core/config/.env.dev
-$EDITOR core/config/.env.dev
+cp core/config/.env.example core/config/.env.prod
+$EDITOR core/config/.env.prod
 ```
 
 - **Unified configuration:** Gateway, GPU Worker, and Docker Compose read from the same `.env` file and `settings.py`.
@@ -133,7 +196,7 @@ curl --fail-with-body -X POST http://localhost:8080/api/v1/parse/by-filename/doc
 
 ## Configuration
 
-All configuration items are managed via a single configuration file (default `core/config/.env.dev`, template in [core/config/.env.example](core/config/.env.example)):
+All configuration items are managed via a single configuration file (default `core/config/.env.prod`, template in [core/config/.env.example](core/config/.env.example)):
 
 | Variable | Default / Description |
 | --- | --- |
@@ -167,6 +230,11 @@ Parsing options are passed as **multipart form fields** per request:
 
 ## Operations & API Reference
 
+> [!TIP]
+> **Interactive API Documentation (Swagger UI):** When the gateway is running, access full interactive OpenAPI schemas and API testing directly in your browser at [http://localhost:8080/docs](http://localhost:8080/docs) (or retrieve raw JSON at [http://localhost:8080/openapi.json](http://localhost:8080/openapi.json)).
+
+### GPU Lifecycle Control
+
 ```bash
 # Check worker status and idle countdown
 curl --fail-with-body http://localhost:8080/api/v1/system/gpu/status
@@ -177,31 +245,34 @@ curl --fail-with-body -X POST http://localhost:8080/api/v1/system/gpu/wake
 # Stop worker to free VRAM (rejected if active tasks are running)
 curl --fail-with-body -X POST http://localhost:8080/api/v1/system/gpu/sleep
 
+# Force stop worker even when tasks are active (may interrupt running jobs)
+curl --fail-with-body -X POST "http://localhost:8080/api/v1/system/gpu/sleep?force=true"
+
 # View gateway logs
 sudo ./docs/deploy/compose.sh logs --tail=100 sentry
 ```
 
-Use `POST /api/v1/system/gpu/sleep?force=true` to force-stop the worker container even when tasks are active (may interrupt running jobs).
+### Complete Endpoint Directory
 
-| Method & Path | Description |
-| --- | --- |
-| `POST /api/v1/parse` | Upload, resume, or reuse document; returns complete Markdown |
-| `POST /api/v1/parse/stream` | Stream completed prefix and live batch results |
-| `POST /api/v1/parse/by-filename/{filename}` | Resume or fetch result by filename; returns complete Markdown |
-| `POST /api/v1/parse/resume` | Resume execution by task ID; returns complete Markdown |
-| `GET /api/v1/tasks/{task_id}` | Query task details, error status, and segment checkpoints |
-| `GET /api/v1/tasks/{task_id}/result` | Return complete Markdown text for a finished task |
-| `GET /api/v1/tasks/{task_id}/intermediate` | Return contiguous saved Markdown prefix for an incomplete task |
-| `GET /api/v1/tasks/by-filename/{filename}` | Find task records matching exact filename |
-| `GET /api/v1/tasks/by-hash/{file_hash}` | Find task records matching file SHA-256 |
-| `GET /health` | Basic gateway health check and worker API connectivity |
-| `GET /api/v1/system/gpu/status` | Detailed container state and idle timer countdown |
-| `POST /api/v1/system/gpu/wake` | Manually wake GPU worker container |
-| `POST /api/v1/system/gpu/sleep` | Manually sleep GPU worker container |
+| Method & Path | Summary | Description |
+| --- | --- | --- |
+| `POST /api/v1/parse` | Parse Document | Upload, resume, or reuse document; returns complete Markdown |
+| `POST /api/v1/parse/stream` | Stream Document | Replay saved prefix and stream live batch results |
+| `POST /api/v1/parse/by-filename/{filename}` | Resume by Filename | Resume or fetch result by filename; returns complete Markdown |
+| `POST /api/v1/parse/resume` | Resume by Task ID | Resume execution by task ID; returns complete Markdown |
+| `GET /api/v1/tasks/{task_id}` | Query Task Details | Query task details, error status, and segment checkpoints |
+| `GET /api/v1/tasks/{task_id}/result` | Fetch Result | Return complete Markdown text for a finished task |
+| `GET /api/v1/tasks/{task_id}/intermediate` | Fetch Intermediate Text | Return contiguous saved Markdown prefix for an incomplete task |
+| `GET /api/v1/tasks/by-filename/{filename}` | Find by Filename | Find task records matching exact filename |
+| `GET /api/v1/tasks/by-hash/{file_hash}` | Find by Content Hash | Find task records matching file SHA-256 |
+| `GET /health` | Health Check | Basic gateway health check and worker API connectivity |
+| `GET /api/v1/system/gpu/status` | Worker Status | Detailed container state, active task count, and idle countdown |
+| `POST /api/v1/system/gpu/wake` | Wake Worker | Manually wake GPU worker container |
+| `POST /api/v1/system/gpu/sleep` | Sleep Worker | Manually sleep GPU worker container to release VRAM |
 
 ---
 
-## Local Development
+## Local Development & Testing
 
 Requires Python 3.12 with `pip` and `venv`:
 
@@ -209,41 +280,49 @@ Requires Python 3.12 with `pip` and `venv`:
 python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install -r core/requirements.txt
-cp -n core/config/.env.example core/config/.env.dev
+cp -n core/config/.env.example core/config/.env.prod
 ```
 
-Configure your local database, Docker socket, and storage paths in `core/config/.env.dev`, then launch:
+Configure your local database, Docker socket, and storage paths in `core/config/.env.prod`, then launch:
 
 ```bash
 python core/main.py
 ```
 
-To run a headless gateway instance without connecting to PostgreSQL (system and GPU APIs remain active):
+### Running Headless Gateway (Without Database)
+If PostgreSQL is not yet configured, launch a headless gateway instance:
 
 ```bash
 POSTGRES_URL='' python core/main.py
 ```
 
-Inspect API schema or open interactive docs at [http://localhost:8080/docs](http://localhost:8080/docs):
+In this mode, parsing endpoints are disabled, but system health checks and GPU lifecycle controls (`/health`, `/api/v1/system/gpu/*`) remain fully functional.
+
+### Integration & Checkpoint Tests
+Checkpoint recovery and result stitching tests are located at [tests/test_checkpoint_results.py](tests/test_checkpoint_results.py), utilizing an isolated database and real disk files:
 
 ```bash
-curl --fail-with-body http://localhost:8080/openapi.json
+SENTRY_TEST_DATABASE_URL=postgresql+psycopg2://mineru_admin:mineru_password@localhost:5432/mineru_sentry \
+  python -m unittest discover -s tests -v
 ```
 
 Database schema migrations are automatically executed on startup when PostgreSQL is configured. Archived DDL is available at [core/sql/2026-09-09.sql](core/sql/2026-09-09.sql).
 
 ---
 
-## Project & Support
+## Project Structure
 
-[core/main.py](core/main.py) is the application entry point. [core/](core/) contains APIs, services, entities, and configuration; [docs/deploy/](docs/deploy/) contains container definitions and orchestration scripts.
-
-Tests for checkpoints and result stitching are located at [tests/test_checkpoint_results.py](tests/test_checkpoint_results.py), utilizing an isolated database and real disk files.
-
-Document parsing algorithms and models are provided by [MinerU](https://github.com/opendatalab/MinerU). Please consult upstream repositories for model licensing and third-party terms.
+- [core/main.py](core/main.py): Application entry point and FastAPI factory.
+- [core/api/](core/api/): HTTP route definitions for document parsing and GPU lifecycle control.
+- [core/service/](core/service/): Business logic for Docker container orchestration, task scheduling, and markdown stitching.
+- [core/config/](core/config/): Configuration loader and settings models.
+- [docs/deploy/](docs/deploy/): Dockerfiles, Docker Compose orchestrations, and deployment shell scripts.
+- [tests/](tests/): Unit and integration test suite for checkpoint recovery and deduplication.
 
 ---
 
-## License
+## License & Attribution
 
 This project is licensed under the [GNU General Public License v3.0 (GPLv3)](LICENSE).
+
+Document parsing algorithms, layout models, and OCR backends are provided by [MinerU](https://github.com/opendatalab/MinerU). Please consult upstream repositories for model licensing and third-party terms.
