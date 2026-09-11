@@ -1,8 +1,14 @@
 """Shared configuration loaded from a selected file and process environment."""
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Optional
+
+# Ensure project root is in sys.path when invoked directly as a script
+_project_root = str(Path(__file__).resolve().parent.parent.parent)
+if _project_root not in sys.path:
+	sys.path.insert(0, _project_root)
 
 from core.util.env_util import load_env
 
