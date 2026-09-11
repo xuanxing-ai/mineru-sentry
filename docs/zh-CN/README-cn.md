@@ -118,7 +118,7 @@ $EDITOR core/config/.env.prod
 ### 2. 部署与启动
 
 #### 首次一键初始化
-自动按序完成镜像构建、模型权重下载（至 `/usr/model/MinerU`）、待机 Worker 容器创建以及网关启动：
+自动按序完成停止清理旧容器、镜像构建、模型权重下载（至 `/usr/model/MinerU`）、待机 Worker 容器创建以及网关启动：
 
 ```bash
 ./docs/deploy/compose.sh init
