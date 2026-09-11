@@ -6,4 +6,7 @@ RUN python -m pip install --no-cache-dir -r requirements.txt
 
 COPY core/ ./core/
 
+ENV PYTHONPATH=/app
+ENV PYTHONUNBUFFERED=1
+
 CMD ["python", "core/main.py"]
