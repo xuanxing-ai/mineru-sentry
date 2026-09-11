@@ -13,7 +13,7 @@ if [ ! -r "$env_file" ]; then
 	echo "错误: 环境配置文件不存在或不可读: $env_file" >&2
 	exit 1
 fi
-
+export ENV_FILE="$env_file"
 
 # Discover image build/pull type (local vs docker)
 image_type_from_file=$(grep -E '^[[:space:]]*MINERU_IMAGE_TYPE=' "$env_file" 2>/dev/null | tail -n 1 | cut -d '=' -f2- | tr -d '"' | tr -d "'" | tr -d '[:space:]')
