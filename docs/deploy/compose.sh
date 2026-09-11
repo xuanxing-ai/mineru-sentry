@@ -99,6 +99,14 @@ run_download() {
 	fi
 }
 
+clean_containers() {
+	worker_name_from_file=$( (grep -E '^[[:space:]]*MINERU_WORKER_CONTAINER_NAME=' "$env_file" 2>/dev/null || true) | tail -n 1 | cut -d '=' -f2- | tr -d '"' | tr -d "'" | tr -d '[:space:]')
+	worker_name="${MINERU_WORKER_CONTAINER_NAME:-${worker_name_from_file:-mineru_gpu_worker}}"
+	echo "==> 停止并移除现有容器与网络 (sentry, $worker_name)..."
+	docker compose --env-file "$env_file" -f "$deploy_directory/compose.yaml" --profile worker down --remove-orphans 2>/dev/null || true
+	docker rm -f mineru-sentry "$worker_name" 2>/dev/null || true
+}
+
 if [ "${1:-}" = "download" ]; then
 	shift
 	run_download "$@"
@@ -107,17 +115,19 @@ fi
 
 if [ "${1:-}" = "init" ]; then
 	shift
-	echo "==> 1/4 [Images] 准备镜像 (模式: $MINERU_IMAGE_TYPE)..."
+	echo "==> 1/5 [Clean] 停止并清理旧容器与网络..."
+	clean_containers
+	echo "==> 2/5 [Images] 准备镜像 (模式: $MINERU_IMAGE_TYPE)..."
 	prepare_images
 	if [ "$MINERU_IMAGE_TYPE" = "local" ]; then
-		echo "==> 2/4 [Download] 下载 MinerU 模型权重至宿主机..."
+		echo "==> 3/5 [Download] 下载 MinerU 模型权重至宿主机..."
 		run_download
 	else
-		echo "==> 2/4 [Download] MINERU_IMAGE_TYPE=docker (默认使用镜像内置模型)，跳过模型下载步骤..."
+		echo "==> 3/5 [Download] MINERU_IMAGE_TYPE=docker (默认使用镜像内置模型)，跳过模型下载步骤..."
 	fi
-	echo "==> 3/4 [Create] 创建待机 Worker 容器..."
+	echo "==> 4/5 [Create] 创建待机 Worker 容器..."
 	docker compose --env-file "$env_file" -f "$deploy_directory/compose.yaml" create mineru_worker
-	echo "==> 4/4 [Up] 后台启动网关服务..."
+	echo "==> 5/5 [Up] 后台启动网关服务..."
 	docker compose --env-file "$env_file" -f "$deploy_directory/compose.yaml" up -d sentry
 	sleep 2
 	container_name=$(docker compose --env-file "$env_file" -f "$deploy_directory/compose.yaml" ps -a --format '{{.Name}}' sentry)
@@ -161,17 +171,23 @@ if [ "${1:-}" = "start" ]; then
 	exec docker compose --env-file "$env_file" -f "$deploy_directory/compose.yaml" up -d sentry "$@"
 fi
 
+if [ "${1:-}" = "down" ]; then
+	shift
+	clean_containers
+	exit 0
+fi
+
 if [ $# -eq 0 ]; then
 	echo "MinerU-Sentry Compose 管理脚本"
 	echo "配置文件: $env_file"
 	echo "镜像模式 (MINERU_IMAGE_TYPE): $MINERU_IMAGE_TYPE (docker: 远端拉取, local: 本地源码编译)"
 	echo ""
 	echo "常用快捷命令:"
-	echo "  $0 init        # 【首次一键部署】准备镜像 ($MINERU_IMAGE_TYPE) -> 下载模型 -> 创建待机 Worker -> 启动网关"
+	echo "  $0 init        # 【一键全新部署】清理旧容器 -> 准备镜像 ($MINERU_IMAGE_TYPE) -> 下载模型 -> 创建待机 Worker -> 启动网关"
 	echo "  $0 start       # 【日常一键启动】确保创建待机 Worker -> 启动网关"
 	echo "  $0 download    # 单独下载/更新 MinerU 模型"
 	echo "  $0 logs sentry # 查看网关运行日志"
-	echo "  $0 down        # 停止并移除容器"
+	echo "  $0 down        # 停止并移除所有容器 (sentry, worker)"
 	echo ""
 	echo "高级用法: $0 [docker-compose 原生子命令，如 ps / stop / run 等]"
 	exit 0
