@@ -309,7 +309,7 @@ SENTRY_TEST_DATABASE_URL=postgresql+psycopg2://mineru_admin:mineru_password@loca
   python -m unittest discover -s tests -v
 ```
 
-PostgreSQL 配置完成后，网关在启动时会自动进行数据库表迁移；归档 DDL 位于 [core/sql/2026-09-09.sql](../../core/sql/2026-09-09.sql)。
+PostgreSQL 配置完成后，网关在启动时会自动进行数据库表迁移；归档 DDL 位于 [docs/sql/2026-09-09.sql](../sql/2026-09-09.sql)。
 
 ---
 
