@@ -5,7 +5,7 @@ set -eu
 # MinerU-Sentry only connects to PostgreSQL; you can run PostgreSQL anywhere.
 
 deploy_directory=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-project_root=$(CDPATH= cd -- "$deploy_directory/../.." && pwd)
+project_root=$(CDPATH= cd -- "$deploy_directory/.." && pwd)
 
 # Load configuration if available
 if [ -r "$project_root/core/config/.env.prod" ]; then
