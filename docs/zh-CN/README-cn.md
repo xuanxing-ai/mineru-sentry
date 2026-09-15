@@ -112,7 +112,7 @@ $EDITOR core/config/.env.prod
 - **自动生成 `mineru.json`**：系统启动或唤醒 Worker 时，会自动根据 `settings.py` 生成 `/usr/model/MinerU/mineru.json`，无需用户手工编写和维护。
 - **PostgreSQL 仅负责连接**：本项目只连接 PostgreSQL 存储任务状态，无论 PostgreSQL 运行在独立机器、宿主机还是容器均可。如需在本地通过 Docker 快速启动一个独立 PostgreSQL，可执行：
   ```bash
-  ./docs/deploy/postgres.sh
+  ./deploy/postgres.sh
   ```
 
 ### 2. 部署与启动
@@ -121,20 +121,20 @@ $EDITOR core/config/.env.prod
 自动按序完成停止清理旧容器、镜像构建、模型权重下载（至 `/usr/model/MinerU`）、待机 Worker 容器创建以及网关启动：
 
 ```bash
-./docs/deploy/compose.sh init
+./deploy/compose.sh init
 ```
 
 #### 日常运维操作
 
 ```bash
 # 启动网关并确保待机 Worker 容器存在
-./docs/deploy/compose.sh start
+./deploy/compose.sh start
 
 # 停止网关及相关服务
-./docs/deploy/compose.sh down
+./deploy/compose.sh down
 
 # 查看网关实时日志
-./docs/deploy/compose.sh logs -f sentry
+./deploy/compose.sh logs -f sentry
 ```
 
 #### 验证服务状态
@@ -252,7 +252,7 @@ curl --fail-with-body -X POST http://localhost:8080/api/v1/system/gpu/sleep
 curl --fail-with-body -X POST "http://localhost:8080/api/v1/system/gpu/sleep?force=true"
 
 # 查看网关实时日志
-sudo ./docs/deploy/compose.sh logs --tail=100 sentry
+sudo ./deploy/compose.sh logs --tail=100 sentry
 ```
 
 ### 完整 API 接口清单
@@ -319,7 +319,7 @@ PostgreSQL 配置完成后，网关在启动时会自动进行数据库表迁移
 - [core/api/](../../core/api/)：文档解析与系统 GPU 生命周期管理接口路由。
 - [core/service/](../../core/service/)：Docker 容器编排、任务调度及 Markdown 结果拼接核心服务。
 - [core/config/](../../core/config/)：配置加载器及系统环境模型定义。
-- [docs/deploy/](../deploy/)：容器镜像构建文件、Compose 编排文件及部署运维脚本。
+- [deploy/](../../deploy/)：容器镜像构建文件、Compose 编排文件及部署运维脚本。
 - [tests/](../../tests/)：检查点恢复与任务去重单元与集成测试套件。
 
 ---
