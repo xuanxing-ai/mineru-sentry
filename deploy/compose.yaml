@@ -3,14 +3,14 @@ name: mineru-sentry
 services:
   sentry:
     build:
-      context: ../..
-      dockerfile: docs/deploy/sentry.Dockerfile
+      context: ..
+      dockerfile: deploy/sentry.Dockerfile
     image: ${SENTRY_IMAGE:-mineru-sentry:source}
     pull_policy: never
     container_name: mineru-sentry
-    restart: unless-stopped
+    restart: always
     env_file:
-      - ../../core/config/${CONFIG_FILE_PATH:-.env.prod}
+      - ../core/config/${CONFIG_FILE_PATH:-.env.prod}
     environment:
       - PYTHONPATH=/app
       - CONFIG_FILE_PATH=${CONFIG_FILE_PATH:-.env.prod}
@@ -19,7 +19,7 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - /usr/model/MinerU:/usr/model/MinerU
-      - ../../core/config/${CONFIG_FILE_PATH:-.env.prod}:/app/core/config/${CONFIG_FILE_PATH:-.env.prod}:ro
+      - ../core/config/${CONFIG_FILE_PATH:-.env.prod}:/app/core/config/${CONFIG_FILE_PATH:-.env.prod}:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks: [mineru_net]
@@ -28,8 +28,8 @@ services:
     # Excluded from a plain up; the gateway starts the pre-created container on demand.
     profiles: [worker]
     build:
-      context: ../..
-      dockerfile: docs/deploy/mineru-api.Dockerfile
+      context: ..
+      dockerfile: deploy/mineru-api.Dockerfile
       additional_contexts:
         mineru_source: ${MINERU_SOURCE_DIR:-/home/hsiong/Project/Python/MinerU}
       args:
@@ -37,7 +37,9 @@ services:
     image: ${MINERU_IMAGE:-mineru-api:5090-source}
     pull_policy: ${MINERU_PULL_POLICY:-never}
     container_name: ${MINERU_WORKER_CONTAINER_NAME:-mineru_gpu_worker}
-    restart: "no"
+    restart: always
+    env_file:
+      - ../core/config/${CONFIG_FILE_PATH:-.env.prod}
     entrypoint:
       - /bin/bash
       - -c
@@ -59,7 +61,7 @@ services:
         esac
         exec "$$@" $$UTIL_ARG
       - "--"
-    command: ["mineru-api", "--host", "0.0.0.0", "--port", "8000"]
+    command: ["mineru-api", "--host", "${MINERU_API_HOST:-0.0.0.0}", "--port", "${MINERU_API_PORT:-8000}"]
     shm_size: ${MINERU_SHM_SIZE:-16gb}
     ulimits:
       memlock: -1
@@ -72,6 +74,8 @@ services:
               device_ids: ["${MINERU_GPU_DEVICE_ID:-0}"]
               capabilities: [gpu]
     environment:
+      - MINERU_API_HOST=${MINERU_API_HOST:-0.0.0.0}
+      - MINERU_API_PORT=${MINERU_API_PORT:-8000}
       - GPU_MEMORY_UTILIZATION_SIZE=${GPU_MEMORY_UTILIZATION_SIZE:-}
       - GPU_MEMORY_UTILIZATION=${GPU_MEMORY_UTILIZATION:-}
       - MINERU_TOOLS_CONFIG_JSON=${MINERU_CONFIG_FILE:-}
