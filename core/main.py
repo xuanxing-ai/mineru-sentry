@@ -16,6 +16,7 @@ from core.config import settings
 from core.init import postgres_init
 from core.init.log import setup_logging
 from core.api.system_api import router as system_router
+from core.api.fidelity_api import router as fidelity_router
 from core.service.docker_service import docker_service
 
 
@@ -48,6 +49,7 @@ def create_app() -> FastAPI:
 		app.include_router(parse_router)
 
 	app.include_router(system_router)
+	app.include_router(fidelity_router)
 	docker_service.start_idle_monitor()
 	app.add_event_handler("shutdown", docker_service.stop_idle_monitor)
 	return app
