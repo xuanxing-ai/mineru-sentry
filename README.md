@@ -112,7 +112,7 @@ $EDITOR core/config/.env.prod
 - **Automatic `mineru.json` generation:** The gateway automatically generates `/usr/model/MinerU/mineru.json` from settings on startup and container wake; manual configuration is never required.
 - **Flexible PostgreSQL connection:** Sentry only connects to PostgreSQL and does not bundle database lifecycle. Use an existing database, host service, or external container. To quickly run a dedicated PostgreSQL container via Docker:
   ```bash
-  ./docs/deploy/postgres.sh
+  ./deploy/postgres.sh
   ```
 
 ### 2. Deploy & Launch
@@ -120,30 +120,30 @@ $EDITOR core/config/.env.prod
 #### Option A: One-Click Initial Setup (Recommended)
 Cleans old containers, builds images, downloads models, creates the standby worker container, and starts the gateway:
 ```bash
-./docs/deploy/compose.sh init
+./deploy/compose.sh init
 ```
 
 #### Option B: Step-by-Step
 ```bash
 # 1. Build images
-./docs/deploy/compose.sh build sentry mineru_worker
+./deploy/compose.sh build sentry mineru_worker
 
 # 2. Download models (skip if models already exist locally)
-./docs/deploy/compose.sh download
+./deploy/compose.sh download
 
 # 3. Create standby worker container and start gateway
-./docs/deploy/compose.sh create mineru_worker
-./docs/deploy/compose.sh up -d sentry
+./deploy/compose.sh create mineru_worker
+./deploy/compose.sh up -d sentry
 ```
 
 For daily restarts or launches:
 ```bash
-./docs/deploy/compose.sh start
+./deploy/compose.sh start
 ```
 
 Verify service and worker status:
 ```bash
-./docs/deploy/compose.sh --profile worker ps -a
+./deploy/compose.sh --profile worker ps -a
 curl --fail-with-body http://localhost:8080/health
 ```
 
@@ -251,8 +251,8 @@ curl --fail-with-body -X POST http://localhost:8080/api/v1/system/gpu/sleep
 # Force stop worker even when tasks are active (may interrupt running jobs)
 curl --fail-with-body -X POST "http://localhost:8080/api/v1/system/gpu/sleep?force=true"
 
-# View gateway logs
-sudo ./docs/deploy/compose.sh logs --tail=100 sentry
+# Follow real-time gateway logs
+sudo ./deploy/compose.sh logs --tail=100 sentry
 ```
 
 ### Complete Endpoint Directory
@@ -319,7 +319,7 @@ Database schema migrations are automatically executed on startup when PostgreSQL
 - [core/api/](core/api/): HTTP route definitions for document parsing and GPU lifecycle control.
 - [core/service/](core/service/): Business logic for Docker container orchestration, task scheduling, and markdown stitching.
 - [core/config/](core/config/): Configuration loader and settings models.
-- [docs/deploy/](docs/deploy/): Dockerfiles, Docker Compose orchestrations, and deployment shell scripts.
+- [deploy/](deploy/): Dockerfiles, Docker Compose orchestrations, and deployment shell scripts.
 - [tests/](tests/): Unit and integration test suite for checkpoint recovery and deduplication.
 
 ---
