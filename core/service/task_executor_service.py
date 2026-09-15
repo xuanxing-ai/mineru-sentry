@@ -1,8 +1,8 @@
 """Execute recoverable page batches independently of the caller's HTTP connection."""
+import base64
 import logging
 from pathlib import Path
 import re
-import shutil
 import threading
 import time
 import uuid
@@ -237,14 +237,13 @@ class TaskExecutorService:
 					segment.mineru_task_id = worker_task_id
 					TaskSegmentRepo.update(session, segment)
 				self._poll_mineru_status(segment.mineru_task_id)
-				markdown = mineru_client_service.get_task_markdown(segment.mineru_task_id)
+				markdown, images_dict = mineru_client_service.get_task_result(segment.mineru_task_id)
 				# Every response replays this exact durable text, including batch separators.
 				content = markdown.strip() + "\n\n" if markdown.strip() else ""
 				checkpoint_path = Path(segment.md_path)
 				stitcher_service.write_checkpoint(checkpoint_path, content)
-				if getattr(task, "return_images", False):
-					self._collect_segment_images(task, segment)
-				self._cleanup_worker_segment_output(segment.mineru_task_id)
+				if getattr(task, "return_images", False) and images_dict:
+					self._save_images(task, images_dict)
 				segment.status = TaskStatusConstant.COMPLETED
 				segment.error_message = None
 				task.last_processed_page = segment.end_page
@@ -277,44 +276,31 @@ class TaskExecutorService:
 			time.sleep(2)
 		raise TimeoutError("MinerU batch polling timed out; upload the same file to reconnect")
 
-	def _collect_segment_images(self, task: ParseTaskEntity, segment: TaskSegmentEntity) -> None:
+	def _save_images(self, task: ParseTaskEntity, images_dict: dict[str, str]) -> None:
 		"""
-		Copy extracted images from worker output directory into persistent task storage.
+		Decode base64 Data URIs and save images directly into the task's output image directory.
 		:param task: Parent parsing task entity.
-		:param segment: Current batch segment entity.
+		:param images_dict: Mapping of image filename to base64 Data URI string.
 		"""
-		if not segment.mineru_task_id or not task.output_dir:
-			return
-		worker_output_root = Path(settings.MINERU_API_OUTPUT_ROOT or "/usr/model/MinerU/data/worker_output")
-		worker_task_dir = worker_output_root / segment.mineru_task_id
-		if not worker_task_dir.is_dir():
+		if not task.output_dir or not images_dict:
 			return
 		task_images_dir = Path(task.output_dir) / "images"
 		task_images_dir.mkdir(parents=True, exist_ok=True)
-		collected_count = 0
-		for item in worker_task_dir.rglob("*"):
-			if item.is_file() and item.parent.name == "images":
-				destination = task_images_dir / item.name
-				shutil.copy2(item, destination)
-				collected_count += 1
-		if collected_count > 0:
-			logging.info("Collected %d images from segment %s into %s", collected_count, segment.id, task_images_dir)
-
-	def _cleanup_worker_segment_output(self, mineru_task_id: Optional[str]) -> None:
-		"""
-		Remove the temporary worker output folder for this segment to avoid disk accumulation.
-		:param mineru_task_id: MinerU worker task ID string.
-		"""
-		if not mineru_task_id:
-			return
-		worker_output_root = Path(settings.MINERU_API_OUTPUT_ROOT or "/usr/model/MinerU/data/worker_output")
-		worker_task_dir = worker_output_root / mineru_task_id
-		if worker_task_dir.exists() and worker_task_dir.is_dir():
+		saved_count = 0
+		for image_name, data_uri in images_dict.items():
 			try:
-				shutil.rmtree(worker_task_dir, ignore_errors=True)
-				logging.info("Cleaned up temporary worker output directory: %s", worker_task_dir)
+				if "," in data_uri:
+					raw_b64 = data_uri.split(",", 1)[1]
+				else:
+					raw_b64 = data_uri
+				image_bytes = base64.b64decode(raw_b64)
+				destination = task_images_dir / Path(image_name).name
+				destination.write_bytes(image_bytes)
+				saved_count += 1
 			except Exception as exc:
-				logging.warning("Failed to clean up worker output directory %s: %s", worker_task_dir, exc)
+				logging.warning("Failed to decode and save image %s for task %s: %s", image_name, task.id, exc)
+		if saved_count > 0:
+			logging.info("Saved %d images for task %s into %s", saved_count, task.id, task_images_dir)
 
 
 task_executor_service = TaskExecutorService()

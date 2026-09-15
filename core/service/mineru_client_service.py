@@ -1,6 +1,6 @@
 """HTTP Client service for synchronous communication with mineru-api."""
 from pathlib import Path
-from typing import Optional
+from typing import Dict, Optional, Tuple
 import logging
 import requests
 
@@ -106,8 +106,8 @@ class MineruClientService:
 			logging.warning(f"Error polling mineru task {mineru_task_id}: {exc}")
 			raise MineruClientError(f"Polling error: {exc}") from exc
 
-	def get_task_markdown(self, mineru_task_id: str) -> str:
-		"""Read the single uploaded document's Markdown from MinerU's JSON result."""
+	def get_task_result(self, mineru_task_id: str) -> Tuple[str, Dict[str, str]]:
+		"""Read the single uploaded document's Markdown and images from MinerU's JSON result via HTTP."""
 		endpoint = f"{self.base_url}/tasks/{mineru_task_id}/result"
 		try:
 			response = requests.get(endpoint, timeout=300.0)
@@ -123,11 +123,18 @@ class MineruClientService:
 			# An empty page is valid; missing output is not a completed checkpoint.
 			if not isinstance(markdown, str):
 				raise MineruClientError("MinerU result is missing md_content")
-			return markdown
+			raw_images = document.get("images") if isinstance(document, dict) else None
+			images = raw_images if isinstance(raw_images, dict) else {}
+			return markdown, images
 		except MineruTaskUnavailableError:
 			raise
 		except Exception as exc:
 			raise MineruClientError(f"Failed to read MinerU result: {exc}") from exc
+
+	def get_task_markdown(self, mineru_task_id: str) -> str:
+		"""Read the single uploaded document's Markdown from MinerU's JSON result."""
+		markdown, _ = self.get_task_result(mineru_task_id)
+		return markdown
 
 
 # Global singleton service
