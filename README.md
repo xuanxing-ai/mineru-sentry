@@ -309,7 +309,7 @@ SENTRY_TEST_DATABASE_URL=postgresql+psycopg2://mineru_admin:mineru_password@loca
   python -m unittest discover -s tests -v
 ```
 
-Database schema migrations are automatically executed on startup when PostgreSQL is configured. Archived DDL is available at [core/sql/2026-09-09.sql](core/sql/2026-09-09.sql).
+Database schema migrations are automatically executed on startup when PostgreSQL is configured. Archived DDL is available at [docs/sql/2026-09-09.sql](docs/sql/2026-09-09.sql).
 
 ---
 
