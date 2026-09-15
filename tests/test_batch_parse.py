@@ -2,15 +2,16 @@
 """Batch document parsing test script.
 
 Scans configured directories or files for PDF/Word documents,
-sends them to MinerU Sentry parse API via curl, and saves Markdown results
+sends them to MinerU Sentry parse API via requests, and saves Markdown results
 to docs/output/ (overwriting with latest generated results).
 """
 import os
 from pathlib import Path
-import subprocess
 import sys
 import time
 from typing import List, Sequence, Union
+
+import requests
 
 # 支持的文件后缀列表
 SUPPORTED_EXTENSIONS: List[str] = [".pdf", ".docx", ".doc"]
@@ -58,105 +59,6 @@ def collect_target_files(
 	return collected_files
 
 
-def parse_document_via_curl(
-	file_path: Path,
-	api_url: str,
-	output_dir: Path,
-	force: bool = False,
-	return_images: bool = False,
-	timeout_seconds: int = 1800,
-) -> bool:
-	"""Call parse API via curl command and save markdown response."""
-	filename_stem = file_path.stem
-	target_md_path = output_dir / f"{filename_stem}.md"
-	header_file = output_dir / f".curl_headers_{filename_stem}.txt"
-
-	curl_cmd = [
-		"curl",
-		"--fail-with-body",
-		"-sS",
-		"--dump-header",
-		str(header_file),
-		api_url,
-		"-F",
-		f"file=@{str(file_path)}",
-		"-F",
-		f"return_images={'true' if return_images else 'false'}",
-	]
-	if force:
-		curl_cmd.extend(["-F", "force=true"])
-
-	print(f"\n[START] Parsing: {file_path.name} -> {target_md_path.name}")
-	start_time = time.time()
-
-	try:
-		process = subprocess.run(
-			curl_cmd,
-			stdout=subprocess.PIPE,
-			stderr=subprocess.PIPE,
-			text=True,
-			encoding="utf-8",
-			errors="replace",
-			timeout=timeout_seconds,
-		)
-	except subprocess.TimeoutExpired:
-		print(f"[FAIL] Request timed out after {timeout_seconds}s: {file_path.name}")
-		header_file.unlink(missing_ok=True)
-		return False
-	except Exception as exc:
-		print(f"[FAIL] Failed to execute curl: {exc}")
-		header_file.unlink(missing_ok=True)
-		return False
-
-	duration = time.time() - start_time
-
-	if process.returncode != 0:
-		error_output = process.stderr.strip() or process.stdout.strip()
-		print(f"[FAIL] Error ({process.returncode}) after {duration:.2f}s: {file_path.name}")
-		if error_output:
-			print(f"       Details: {error_output[:500]}")
-		header_file.unlink(missing_ok=True)
-		return False
-
-	# Save markdown content (overwrite with latest)
-	markdown_content = process.stdout
-	target_md_path.parent.mkdir(parents=True, exist_ok=True)
-	target_md_path.write_text(markdown_content, encoding="utf-8")
-
-	content_size = len(markdown_content.encode("utf-8"))
-	print(f"[SUCCESS] Completed in {duration:.2f}s, saved {content_size} bytes to {target_md_path}")
-
-	# If return_images is enabled, fetch extracted images using X-Sentry-Task-ID
-	if return_images and header_file.is_file():
-		task_id = None
-		for line in header_file.read_text(encoding="utf-8", errors="ignore").splitlines():
-			if line.lower().startswith("x-sentry-task-id:"):
-				task_id = line.split(":", 1)[1].strip()
-				break
-		if task_id:
-			base_url = api_url.rsplit("/parse", 1)[0]
-			images_api_url = f"{base_url}/tasks/{task_id}/images"
-			try:
-				import json
-				import urllib.request
-				req = urllib.request.Request(images_api_url)
-				with urllib.request.urlopen(req, timeout=30) as resp:
-					img_names = json.loads(resp.read().decode("utf-8"))
-				if img_names:
-					images_target_dir = output_dir / "images"
-					images_target_dir.mkdir(parents=True, exist_ok=True)
-					for img_name in img_names:
-						img_url = f"{base_url}/tasks/{task_id}/images/{img_name}"
-						img_dest = images_target_dir / img_name
-						urllib.request.urlretrieve(img_url, str(img_dest))
-					print(f"[IMAGES] Downloaded {len(img_names)} images to {images_target_dir}")
-			except Exception as exc:
-				print(f"[WARN] Failed to download images for task {task_id}: {exc}")
-
-	header_file.unlink(missing_ok=True)
-	return True
-
-
 def run_batch_parse(
 	target_paths: Sequence[str],
 	api_url: str = "http://localhost:8080/api/v1/parse",
@@ -198,18 +100,72 @@ def run_batch_parse(
 	failed_count = 0
 
 	for doc_file in target_files:
-		ok = parse_document_via_curl(
-			file_path=doc_file,
-			api_url=api_url,
-			output_dir=resolved_output_dir,
-			force=force,
-			return_images=return_images,
-			timeout_seconds=timeout_seconds,
-		)
-		if ok:
-			success_count += 1
-		else:
+		target_md_path = resolved_output_dir / f"{doc_file.stem}.md"
+		print(f"\n[START] Parsing: {doc_file.name} -> {target_md_path.name}")
+		start_time = time.time()
+
+		form_data = {
+			"force": "true" if force else "false",
+			"return_images": "true" if return_images else "false",
+		}
+
+		try:
+			with open(doc_file, "rb") as fp:
+				files_payload = {"file": (doc_file.name, fp, "application/octet-stream")}
+				resp = requests.post(
+					api_url,
+					files=files_payload,
+					data=form_data,
+					timeout=timeout_seconds,
+				)
+		except requests.exceptions.Timeout:
+			print(f"[FAIL] Request timed out after {timeout_seconds}s: {doc_file.name}")
 			failed_count += 1
+			continue
+		except Exception as exc:
+			print(f"[FAIL] Failed to send request: {exc}")
+			failed_count += 1
+			continue
+
+		duration = time.time() - start_time
+
+		if resp.status_code != 200:
+			print(f"[FAIL] Error ({resp.status_code}) after {duration:.2f}s: {doc_file.name}")
+			error_details = resp.text.strip()
+			if error_details:
+				print(f"       Details: {error_details[:500]}")
+			failed_count += 1
+			continue
+
+		markdown_content = resp.text
+		target_md_path.parent.mkdir(parents=True, exist_ok=True)
+		target_md_path.write_text(markdown_content, encoding="utf-8")
+
+		content_size = len(markdown_content.encode("utf-8"))
+		print(f"[SUCCESS] Completed in {duration:.2f}s, saved {content_size} bytes to {target_md_path}")
+		success_count += 1
+
+		# 若开启图片提取，通过 X-Sentry-Task-ID 下载提取的图片
+		if return_images:
+			task_id = resp.headers.get("X-Sentry-Task-ID")
+			if task_id:
+				base_url = api_url.rsplit("/parse", 1)[0]
+				images_api_url = f"{base_url}/tasks/{task_id}/images"
+				try:
+					images_resp = requests.get(images_api_url, timeout=30)
+					if images_resp.status_code == 200:
+						img_names = images_resp.json()
+						if img_names:
+							images_target_dir = resolved_output_dir / "images"
+							images_target_dir.mkdir(parents=True, exist_ok=True)
+							for img_name in img_names:
+								img_url = f"{base_url}/tasks/{task_id}/images/{img_name}"
+								img_data_resp = requests.get(img_url, timeout=60)
+								if img_data_resp.status_code == 200:
+									(images_target_dir / img_name).write_bytes(img_data_resp.content)
+							print(f"[IMAGES] Downloaded {len(img_names)} images to {images_target_dir}")
+				except Exception as exc:
+					print(f"[WARN] Failed to download images for task {task_id}: {exc}")
 
 	print("\n" + "=" * 50)
 	print(f"批量处理完成: 总数={len(target_files)}, 成功={success_count}, 失败={failed_count}")
@@ -234,8 +190,6 @@ if __name__ == "__main__":
 		# "/path/to/document.docx",
 	]
 
-
-
 	# 是否强制全量重新解析（默认 False，不清理旧任务与分片缓存）
 	FORCE: bool = False
 
@@ -256,4 +210,3 @@ if __name__ == "__main__":
 		return_images=RETURN_IMAGES,
 		timeout_seconds=TIMEOUT_SECONDS,
 	)
-
