@@ -2,7 +2,7 @@
 set -eu
 
 deploy_directory=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-project_root=$(CDPATH= cd -- "$deploy_directory/../.." && pwd)
+project_root=$(CDPATH= cd -- "$deploy_directory/.." && pwd)
 
 printf "请输入环境配置文件名称 [直接回车默认: .env.prod]: "
 read -r env_name || env_name=""
