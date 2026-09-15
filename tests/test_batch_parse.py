@@ -61,7 +61,7 @@ def collect_target_files(
 
 def run_batch_parse(
 	target_paths: Sequence[str],
-	api_url: str = "http://localhost:8080/api/v1/parse",
+	api_url: str = "http://localhost:8002/api/v1/parse",
 	output_dir: Union[str, Path] = "docs/output",
 	force: bool = False,
 	return_images: bool = False,
@@ -179,12 +179,11 @@ if __name__ == "__main__":
 
 	# 接口地址配置
 	# see@SERVICE_PORT
-	API_URL: str = "http://localhost:8080/api/v1/parse"
+	API_URL: str = "http://localhost:8002/api/v1/parse"
 
 	# 待测试的目录或文件列表（数组形式，支持配置多个目录或具体文件路径）
 	TARGET_PATHS: List[str] = [
 		# 可以在此数组中直接添加需要测试的目录或文件路径，例如：
-
 		# "docs",
 		# "/path/to/document.pdf",
 		# "/path/to/document.docx",
