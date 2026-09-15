@@ -43,3 +43,4 @@ output/
 logs/
 pgdata/
 docs/prompt.md
+docs/output/
