@@ -44,3 +44,4 @@ logs/
 pgdata/
 docs/prompt.md
 docs/output/
+tests/test_batch_parse_local.py
