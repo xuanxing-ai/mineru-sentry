@@ -2,6 +2,7 @@
 import logging
 from pathlib import Path
 import re
+import shutil
 import threading
 import time
 import uuid
@@ -225,10 +226,12 @@ class TaskExecutorService:
 				if not segment.mineru_task_id:
 					file_path = Path(task.file_path)
 					logging.info("Parsing %s pages %s-%s (attempt %s)", task.file_name, segment.start_page, segment.end_page, attempt + 1)
+					return_images_enabled = bool(getattr(task, "return_images", False))
 					worker_task_id = mineru_client_service.submit_parse_task(
 						file_path=file_path, file_name=task.file_name, backend=task.backend,
 						effort=task.effort, parse_method=task.parse_method,
 						formula_enable=task.formula_enable, table_enable=task.table_enable,
+						return_images=return_images_enabled,
 						start_page_id=segment.start_page, end_page_id=segment.end_page,
 					)
 					segment.mineru_task_id = worker_task_id
@@ -239,6 +242,9 @@ class TaskExecutorService:
 				content = markdown.strip() + "\n\n" if markdown.strip() else ""
 				checkpoint_path = Path(segment.md_path)
 				stitcher_service.write_checkpoint(checkpoint_path, content)
+				if getattr(task, "return_images", False):
+					self._collect_segment_images(task, segment)
+				self._cleanup_worker_segment_output(segment.mineru_task_id)
 				segment.status = TaskStatusConstant.COMPLETED
 				segment.error_message = None
 				task.last_processed_page = segment.end_page
@@ -271,5 +277,45 @@ class TaskExecutorService:
 			time.sleep(2)
 		raise TimeoutError("MinerU batch polling timed out; upload the same file to reconnect")
 
+	def _collect_segment_images(self, task: ParseTaskEntity, segment: TaskSegmentEntity) -> None:
+		"""
+		Copy extracted images from worker output directory into persistent task storage.
+		:param task: Parent parsing task entity.
+		:param segment: Current batch segment entity.
+		"""
+		if not segment.mineru_task_id or not task.output_dir:
+			return
+		worker_output_root = Path(settings.MINERU_API_OUTPUT_ROOT or "/usr/model/MinerU/data/worker_output")
+		worker_task_dir = worker_output_root / segment.mineru_task_id
+		if not worker_task_dir.is_dir():
+			return
+		task_images_dir = Path(task.output_dir) / "images"
+		task_images_dir.mkdir(parents=True, exist_ok=True)
+		collected_count = 0
+		for item in worker_task_dir.rglob("*"):
+			if item.is_file() and item.parent.name == "images":
+				destination = task_images_dir / item.name
+				shutil.copy2(item, destination)
+				collected_count += 1
+		if collected_count > 0:
+			logging.info("Collected %d images from segment %s into %s", collected_count, segment.id, task_images_dir)
+
+	def _cleanup_worker_segment_output(self, mineru_task_id: Optional[str]) -> None:
+		"""
+		Remove the temporary worker output folder for this segment to avoid disk accumulation.
+		:param mineru_task_id: MinerU worker task ID string.
+		"""
+		if not mineru_task_id:
+			return
+		worker_output_root = Path(settings.MINERU_API_OUTPUT_ROOT or "/usr/model/MinerU/data/worker_output")
+		worker_task_dir = worker_output_root / mineru_task_id
+		if worker_task_dir.exists() and worker_task_dir.is_dir():
+			try:
+				shutil.rmtree(worker_task_dir, ignore_errors=True)
+				logging.info("Cleaned up temporary worker output directory: %s", worker_task_dir)
+			except Exception as exc:
+				logging.warning("Failed to clean up worker output directory %s: %s", worker_task_dir, exc)
+
 
 task_executor_service = TaskExecutorService()
+

@@ -1,7 +1,7 @@
 """HTTP routes for resumable document parsing and direct Markdown results."""
 from typing import Annotated, List
 from fastapi import APIRouter, Depends, File, UploadFile
-from fastapi.responses import PlainTextResponse, StreamingResponse
+from fastapi.responses import FileResponse, PlainTextResponse, Response, StreamingResponse
 
 from core.dto.task_req import ParseTaskResumeReq, ParseTaskSubmitReq
 from core.dto.task_vo import ParseTaskDetailVo, ParseTaskVo
@@ -63,6 +63,31 @@ def get_intermediate_results(task_id: str):
 	"""Return the durable partial result without file listings or paths."""
 	target_id = task_id
 	response = parse_service.handle_get_intermediate(target_id)
+	return response
+
+
+@router.get("/tasks/{task_id}/images", response_model=List[str], summary="List extracted image filenames for a task")
+def list_task_images(task_id: str) -> List[str]:
+	"""Return the list of image filenames associated with the task."""
+	target_id = task_id
+	images_list = parse_service.handle_list_task_images(target_id)
+	return images_list
+
+
+@router.get("/tasks/{task_id}/images/{filename}", summary="Get an extracted image by filename")
+def get_task_image(task_id: str, filename: str):
+	"""Return the binary image content directly."""
+	target_id = task_id
+	target_filename = filename
+	response = parse_service.handle_get_task_image(target_id, target_filename)
+	return response
+
+
+@router.get("/tasks/{task_id}/zip", summary="Download Markdown and extracted images as a ZIP archive")
+def get_task_zip(task_id: str):
+	"""Package result.md and images directory into a downloadable ZIP archive."""
+	target_id = task_id
+	response = parse_service.handle_get_task_zip(target_id)
 	return response
 
 

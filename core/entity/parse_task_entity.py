@@ -41,6 +41,7 @@ class ParseTaskEntity(Base):
 	parse_method = Column(String(32), default="auto", nullable=False)
 	formula_enable = Column(Boolean, default=True, nullable=False)
 	table_enable = Column(Boolean, default=True, nullable=False)
+	return_images = Column(Boolean, default=False, nullable=False)
 
 	# Page range boundaries
 	start_page_id = Column(Integer, default=0, nullable=False)

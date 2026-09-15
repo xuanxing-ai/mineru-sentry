@@ -1,5 +1,6 @@
 """Resolve same-name uploads to durable tasks and return Markdown directly."""
 import hashlib
+import io
 import logging
 import os
 from pathlib import Path
@@ -7,10 +8,12 @@ import shutil
 import threading
 import time
 from typing import Iterator, List, Optional
+from urllib.parse import quote
 import uuid
+import zipfile
 
 from fastapi import HTTPException, UploadFile
-from fastapi.responses import PlainTextResponse, StreamingResponse
+from fastapi.responses import FileResponse, PlainTextResponse, Response, StreamingResponse
 from pypdf import PdfReader
 
 from core.config import settings
@@ -97,7 +100,7 @@ class ParseService:
 					if task is not None:
 						if task.file_hash != file_hash:
 							raise HTTPException(status_code=409, detail="This filename belongs to different content; use a different filename")
-						option_names = ("backend", "effort", "parse_method", "formula_enable", "table_enable")
+						option_names = ("backend", "effort", "parse_method", "formula_enable", "table_enable", "return_images")
 						if any(getattr(task, name) != getattr(req, name) for name in option_names):
 							raise HTTPException(status_code=409, detail="Parsing options differ from the saved task; use a different filename")
 						stored_end = min(task.end_page_id, total_pages - 1) if total_pages else task.end_page_id
@@ -120,7 +123,8 @@ class ParseService:
 							file_path=str(saved_path), file_size=file_size, total_pages=total_pages,
 							status=TaskStatusConstant.PENDING, backend=req.backend, effort=req.effort,
 							parse_method=req.parse_method, formula_enable=req.formula_enable,
-							table_enable=req.table_enable, start_page_id=0, end_page_id=end_page,
+							table_enable=req.table_enable, return_images=req.return_images,
+							start_page_id=0, end_page_id=end_page,
 							output_dir=str(task_dir),
 						)
 						ParseTaskRepo.add(session, task)
@@ -306,11 +310,103 @@ class ParseService:
 			segments = TaskSegmentRepo.list_by_task_id(session, task_id)
 			segment_vos = [TaskSegmentVo.model_validate(s) for s in segments]
 
+			images_list: List[str] = []
+			if entity.output_dir:
+				images_dir = Path(entity.output_dir) / "images"
+				if images_dir.is_dir():
+					images_list = sorted([p.name for p in images_dir.iterdir() if p.is_file()])
+
 			base_vo = ParseTaskVo.model_validate(entity)
 			return ParseTaskDetailVo(
 				**base_vo.model_dump(),
 				segments=segment_vos,
+				images=images_list,
 			)
+		finally:
+			session.close()
+
+	@staticmethod
+	def handle_list_task_images(task_id: str) -> List[str]:
+		"""
+		Lists extracted image filenames for a specific task.
+		:param task_id: Primary key string.
+		:return: List of image filename strings.
+		"""
+		session = postgres_init.SessionLocal()
+		try:
+			entity = ParseTaskRepo.get_by_id(session, task_id)
+			if not entity:
+				raise HTTPException(status_code=404, detail="Task not found")
+			if not entity.output_dir:
+				return []
+			images_dir = Path(entity.output_dir) / "images"
+			if not images_dir.is_dir():
+				return []
+			return sorted([p.name for p in images_dir.iterdir() if p.is_file()])
+		finally:
+			session.close()
+
+	@staticmethod
+	def handle_get_task_image(task_id: str, filename: str) -> FileResponse:
+		"""
+		Returns an extracted image file for a specific task.
+		:param task_id: Primary key string.
+		:param filename: Filename of the target image.
+		:return: FileResponse containing binary image data.
+		"""
+		safe_filename = Path(filename).name
+		if safe_filename != filename or safe_filename in ("", ".", ".."):
+			raise HTTPException(status_code=400, detail="Invalid filename")
+		session = postgres_init.SessionLocal()
+		try:
+			entity = ParseTaskRepo.get_by_id(session, task_id)
+			if not entity:
+				raise HTTPException(status_code=404, detail="Task not found")
+			if not entity.output_dir:
+				raise HTTPException(status_code=404, detail="Task output directory not found")
+			images_dir = (Path(entity.output_dir) / "images").resolve()
+			image_path = (images_dir / safe_filename).resolve()
+			if not image_path.is_file() or not str(image_path).startswith(str(images_dir)):
+				raise HTTPException(status_code=404, detail="Image not found")
+			return FileResponse(str(image_path))
+		finally:
+			session.close()
+
+	@staticmethod
+	def handle_get_task_zip(task_id: str) -> Response:
+		"""
+		Packages result Markdown and images into a zip archive for download.
+		:param task_id: Primary key string.
+		:return: Response containing zip archive bytes.
+		"""
+		session = postgres_init.SessionLocal()
+		try:
+			entity = ParseTaskRepo.get_by_id(session, task_id)
+			if not entity:
+				raise HTTPException(status_code=404, detail="Task not found")
+			if not entity.output_dir:
+				raise HTTPException(status_code=404, detail="Task output directory not found")
+			task_dir = Path(entity.output_dir)
+			if not task_dir.is_dir():
+				raise HTTPException(status_code=404, detail="Task output directory not found on disk")
+			zip_buffer = io.BytesIO()
+			with zipfile.ZipFile(zip_buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+				result_md = task_dir / "result.md"
+				if result_md.is_file():
+					zf.write(result_md, arcname="result.md")
+				images_dir = task_dir / "images"
+				if images_dir.is_dir():
+					for img_path in sorted(images_dir.iterdir()):
+						if img_path.is_file():
+							zf.write(img_path, arcname=f"images/{img_path.name}")
+			zip_buffer.seek(0)
+			stem = Path(entity.file_name).stem if entity.file_name else task_id
+			zip_filename = f"{stem}.zip"
+			encoded_filename = quote(zip_filename)
+			headers = {
+				"Content-Disposition": f"attachment; filename=\"{task_id}.zip\"; filename*=utf-8''{encoded_filename}",
+			}
+			return Response(content=zip_buffer.getvalue(), media_type="application/zip", headers=headers)
 		finally:
 			session.close()
 

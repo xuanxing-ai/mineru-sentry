@@ -63,19 +63,25 @@ def parse_document_via_curl(
 	api_url: str,
 	output_dir: Path,
 	force: bool = False,
+	return_images: bool = False,
 	timeout_seconds: int = 1800,
 ) -> bool:
 	"""Call parse API via curl command and save markdown response."""
 	filename_stem = file_path.stem
 	target_md_path = output_dir / f"{filename_stem}.md"
+	header_file = output_dir / f".curl_headers_{filename_stem}.txt"
 
 	curl_cmd = [
 		"curl",
 		"--fail-with-body",
 		"-sS",
+		"--dump-header",
+		str(header_file),
 		api_url,
 		"-F",
 		f"file=@{str(file_path)}",
+		"-F",
+		f"return_images={'true' if return_images else 'false'}",
 	]
 	if force:
 		curl_cmd.extend(["-F", "force=true"])
@@ -95,9 +101,11 @@ def parse_document_via_curl(
 		)
 	except subprocess.TimeoutExpired:
 		print(f"[FAIL] Request timed out after {timeout_seconds}s: {file_path.name}")
+		header_file.unlink(missing_ok=True)
 		return False
 	except Exception as exc:
 		print(f"[FAIL] Failed to execute curl: {exc}")
+		header_file.unlink(missing_ok=True)
 		return False
 
 	duration = time.time() - start_time
@@ -107,6 +115,7 @@ def parse_document_via_curl(
 		print(f"[FAIL] Error ({process.returncode}) after {duration:.2f}s: {file_path.name}")
 		if error_output:
 			print(f"       Details: {error_output[:500]}")
+		header_file.unlink(missing_ok=True)
 		return False
 
 	# Save markdown content (overwrite with latest)
@@ -116,6 +125,35 @@ def parse_document_via_curl(
 
 	content_size = len(markdown_content.encode("utf-8"))
 	print(f"[SUCCESS] Completed in {duration:.2f}s, saved {content_size} bytes to {target_md_path}")
+
+	# If return_images is enabled, fetch extracted images using X-Sentry-Task-ID
+	if return_images and header_file.is_file():
+		task_id = None
+		for line in header_file.read_text(encoding="utf-8", errors="ignore").splitlines():
+			if line.lower().startswith("x-sentry-task-id:"):
+				task_id = line.split(":", 1)[1].strip()
+				break
+		if task_id:
+			base_url = api_url.rsplit("/parse", 1)[0]
+			images_api_url = f"{base_url}/tasks/{task_id}/images"
+			try:
+				import json
+				import urllib.request
+				req = urllib.request.Request(images_api_url)
+				with urllib.request.urlopen(req, timeout=30) as resp:
+					img_names = json.loads(resp.read().decode("utf-8"))
+				if img_names:
+					images_target_dir = output_dir / "images"
+					images_target_dir.mkdir(parents=True, exist_ok=True)
+					for img_name in img_names:
+						img_url = f"{base_url}/tasks/{task_id}/images/{img_name}"
+						img_dest = images_target_dir / img_name
+						urllib.request.urlretrieve(img_url, str(img_dest))
+					print(f"[IMAGES] Downloaded {len(img_names)} images to {images_target_dir}")
+			except Exception as exc:
+				print(f"[WARN] Failed to download images for task {task_id}: {exc}")
+
+	header_file.unlink(missing_ok=True)
 	return True
 
 
@@ -124,6 +162,7 @@ def run_batch_parse(
 	api_url: str = "http://localhost:8080/api/v1/parse",
 	output_dir: Union[str, Path] = "docs/output",
 	force: bool = False,
+	return_images: bool = False,
 	timeout_seconds: int = 1800,
 ) -> None:
 	"""Execute batch scanning, API calls, and result persistence."""
@@ -152,6 +191,7 @@ def run_batch_parse(
 		print(f"  [{idx}] {doc_path}")
 	print(f"接口地址 : {api_url}")
 	print(f"输出目录 : {resolved_output_dir}")
+	print(f"提取图片 : {return_images}")
 	print("=" * 50)
 
 	success_count = 0
@@ -163,6 +203,7 @@ def run_batch_parse(
 			api_url=api_url,
 			output_dir=resolved_output_dir,
 			force=force,
+			return_images=return_images,
 			timeout_seconds=timeout_seconds,
 		)
 		if ok:
@@ -198,6 +239,9 @@ if __name__ == "__main__":
 	# 是否强制全量重新解析（默认 False，不清理旧任务与分片缓存）
 	FORCE: bool = False
 
+	# 是否提取并保存图片（默认 False，设为 True 时请求提取图片并下载到 docs/output/images）
+	RETURN_IMAGES: bool = False
+
 	# 请求超时时间（秒）
 	TIMEOUT_SECONDS: int = 1800
 
@@ -209,5 +253,7 @@ if __name__ == "__main__":
 		api_url=API_URL,
 		output_dir=OUTPUT_DIR,
 		force=FORCE,
+		return_images=RETURN_IMAGES,
 		timeout_seconds=TIMEOUT_SECONDS,
 	)
+

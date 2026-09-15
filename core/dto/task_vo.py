@@ -50,6 +50,8 @@ class ParseTaskVo(BaseModel):
 	backend: str
 	# Parsing effort
 	effort: str
+	# Return images switch
+	return_images: bool = False
 	# Start page index
 	start_page_id: int
 	# End page index
@@ -74,6 +76,8 @@ class ParseTaskDetailVo(ParseTaskVo):
 	"""
 	# Path to final stitched Markdown
 	final_md_path: Optional[str] = None
+	# List of extracted image filenames
+	images: List[str] = []
 	# List of all completed segments
 	segments: List[TaskSegmentVo] = []
 

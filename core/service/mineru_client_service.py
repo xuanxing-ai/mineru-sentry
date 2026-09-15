@@ -35,6 +35,7 @@ class MineruClientService:
 		parse_method: str = "auto",
 		formula_enable: bool = True,
 		table_enable: bool = True,
+		return_images: bool = False,
 		start_page_id: int = 0,
 		end_page_id: int = 99999,
 	) -> str:
@@ -47,6 +48,7 @@ class MineruClientService:
 		:param parse_method: auto, txt, or ocr.
 		:param formula_enable: Formula detection boolean.
 		:param table_enable: Table extraction boolean.
+		:param return_images: Extracted images extraction boolean.
 		:param start_page_id: Starting page offset.
 		:param end_page_id: Ending page offset.
 		:return: Created MinerU task ID string.
@@ -65,7 +67,7 @@ class MineruClientService:
 			"end_page_id": str(end_page_id),
 			"return_md": "true",
 			"return_middle_json": "false",
-			"return_images": "false",
+			"return_images": str(return_images).lower(),
 			"response_format_zip": "false",
 		}
 

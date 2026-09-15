@@ -18,6 +18,8 @@ class ParseTaskSubmitReq(BaseModel):
 	formula_enable: bool = Field(default=True, description="Enable LaTeX formula extraction")
 	# Table parsing switch
 	table_enable: bool = Field(default=True, description="Enable HTML table extraction")
+	# Return images switch
+	return_images: bool = Field(default=False, description="Whether to extract and save images; if false, images are not saved")
 	# Page range boundaries
 	start_page_id: int = Field(default=0, ge=0, description="Start page (0-indexed)")
 	end_page_id: int = Field(default=99999, ge=0, description="End page (0-indexed)")
@@ -32,6 +34,7 @@ class ParseTaskSubmitReq(BaseModel):
 		parse_method: str = Form("auto"),
 		formula_enable: bool = Form(True),
 		table_enable: bool = Form(True),
+		return_images: bool = Form(False),
 		start_page_id: int = Form(0, ge=0),
 		end_page_id: int = Form(99999, ge=0),
 		force: bool = Form(False),
@@ -39,6 +42,7 @@ class ParseTaskSubmitReq(BaseModel):
 		query_s: Optional[int] = Query(None, alias="s", ge=0),
 		query_start_page_id: Optional[int] = Query(None, alias="start_page_id", ge=0),
 		query_force: Optional[bool] = Query(None, alias="force"),
+		query_return_images: Optional[bool] = Query(None, alias="return_images"),
 	) -> "ParseTaskSubmitReq":
 		"""Bind multipart options and accept s as the short spelling of the resume offset from form or query."""
 		resolved_s = s if s is not None else query_s
@@ -49,9 +53,11 @@ class ParseTaskSubmitReq(BaseModel):
 		if effective_start > end_page_id:
 			raise HTTPException(status_code=422, detail="Start page exceeds end page")
 		resolved_force = bool(force or query_force)
+		resolved_return_images = bool(return_images or query_return_images)
 		return cls(
 			backend=backend, effort=effort, parse_method=parse_method,
 			formula_enable=formula_enable, table_enable=table_enable,
+			return_images=resolved_return_images,
 			start_page_id=effective_start, end_page_id=end_page_id,
 			force=resolved_force,
 		)
